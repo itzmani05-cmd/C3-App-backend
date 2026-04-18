@@ -1,0 +1,30 @@
+const mongoose = require('mongoose');
+
+const attemptSchema = new mongoose.Schema({
+  userId: mongoose.Schema.Types.ObjectId,
+  quizId: mongoose.Schema.Types.ObjectId,
+
+  score: Number,
+  totalQuestions: Number,
+  percentage: Number,
+
+  isExplanationUnlocked: Boolean,
+  isPassed: Boolean,
+
+  isSubmitted: Boolean,
+  isTimedOut: Boolean,
+
+  responses: [
+    {
+      questionId: mongoose.Schema.Types.ObjectId,
+      selectedOptionIndex: Number,
+      isCorrect: Boolean,
+      isMarkedForReview: Boolean
+    }
+  ],
+
+  startedAt: Date,
+  submittedAt: Date
+});
+
+module.exports = mongoose.model('Attempt', attemptSchema);

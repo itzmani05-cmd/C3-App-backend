@@ -1,0 +1,24 @@
+src/
+├── config/
+│   └── db.js
+├── models/
+│   ├── User.js
+│   ├── Unit.js
+│   ├── Topic.js
+│   ├── Subtopic.js
+│   ├── Quiz.js
+│   ├── Question.js
+│   ├── Attempt.js
+│   ├── Progress.js
+├── controllers/
+│   ├── auth.controller.js
+│   ├── content.controller.js
+│   ├── quiz.controller.js
+├── routes/
+│   ├── auth.routes.js
+│   ├── content.routes.js
+│   ├── quiz.routes.js
+├── middleware/
+│   └── auth.middleware.js
+└── app.js
+server.js
