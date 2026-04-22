@@ -3,6 +3,7 @@ const mongoose = require('mongoose');
 const attemptSchema = new mongoose.Schema({
   userId: mongoose.Schema.Types.ObjectId,
   quizId: mongoose.Schema.Types.ObjectId,
+  questionOrder: [mongoose.Schema.Types.ObjectId],
 
   score: Number,
   totalQuestions: Number,
@@ -25,6 +26,6 @@ const attemptSchema = new mongoose.Schema({
 
   startedAt: Date,
   submittedAt: Date
-});
+}, { strict: false });
 
 module.exports = mongoose.model('Attempt', attemptSchema);

@@ -17,7 +17,6 @@ exports.changePassword=async(req,res)=>{
         if(!user){
             return res.status(404).json({message:"User not found"});
         }
-
         if(user.password!==oldPassword){
             return res.status(400).json({message:"Old password is incorrect"});
         }
@@ -35,7 +34,9 @@ exports.changePassword=async(req,res)=>{
 
 exports.register=async(req,res)=>{
     try{
-        const user=await User.create(req.body);
+        const data=req.body;
+        data.email=data.email?.trim?.toLowerCase();
+        const user=await User.create(data);
         res.json(user);
     }
     catch(err){

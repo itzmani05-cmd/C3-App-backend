@@ -26,12 +26,18 @@ exports.updateProgress=async({userId, topicId=null, subtopicId=null, percentage}
         update.$set.isMastered = true;
     }
 
-    await Progress.findOneAndUpdate(
-        filter,
-        update,
-        {upsert:true}
-    );
-    return passed;
+    try {
+        await Progress.findOneAndUpdate(
+            filter,
+            update,
+            {upsert:true}
+        );
+        console.log("[PROGRESS] updateProgress successful for user:", userId);
+        return passed;
+    } catch (err) {
+        console.error("[PROGRESS] updateProgress error:", err);
+        throw err;
+    }
 };
 
 exports.unlockNextLesson=async(userId,{currentTopicId=null,currentSubtopicId=null}={})=>{
@@ -49,17 +55,22 @@ exports.unlockNextLesson=async(userId,{currentTopicId=null,currentSubtopicId=nul
         ? { userId, subtopicId: nextLesson.subtopicId }
         : { userId, topicId: nextLesson.topicId, subtopicId: null };
 
-    await Progress.findOneAndUpdate(
-        filter,
-        {
-            topicId: nextLesson.topicId || null,
-            subtopicId: nextLesson.subtopicId || null,
-            isUnlocked: true
-        },
-        { upsert: true }
-    );
-
-    return nextLesson;
+    try {
+        await Progress.findOneAndUpdate(
+            filter,
+            {
+                topicId: nextLesson.topicId || null,
+                subtopicId: nextLesson.subtopicId || null,
+                isUnlocked: true
+            },
+            { upsert: true }
+        );
+        console.log("[PROGRESS] unlockNextLesson successful for user:", userId, "Next:", nextLesson.key);
+        return nextLesson;
+    } catch (err) {
+        console.error("[PROGRESS] unlockNextLesson error:", err);
+        throw err;
+    }
 };
 
 exports.getUserProgress=async(req,res)=>{

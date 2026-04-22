@@ -232,7 +232,6 @@ exports.getDashboard = async (req, res) => {
       recentActivity,
     });
 
-    // Cache the response for 5 minutes
     cache.put(cacheKey, {
       user,
       stats: {
@@ -246,7 +245,7 @@ exports.getDashboard = async (req, res) => {
       },
       continueLearning,
       recentActivity,
-    }, 5 * 60 * 1000); // 5 minutes
+    }, 5 * 60 * 1000); 
   } catch (err) {
     console.log(err);
     res.status(500).json({ message: 'Error fetching dashboard' });
