@@ -206,3 +206,125 @@ exports.getSubtopicStudentDetails = async (req, res) => {
     res.status(500).json({ message: "Error fetching student analytics" });
   }
 };
+
+exports.getTopicStudentDetails = async (req, res) => {
+  const { topicId } = req.params;
+
+  try {
+    if(!mongoose.Types.ObjectId.isValid(topicId)){
+      return res.status(400).json({message:"Invalid topic id"});
+    }
+
+    const objectTopicId = new mongoose.Types.ObjectId(topicId);
+
+    const data = await User.aggregate([
+      {
+        $match: {
+          role: "student"
+        }
+      },
+      {
+        $lookup: {
+          from: "progresses",
+          let: { userId: "$_id" },
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $and: [
+                    { $eq: ["$userId", "$$userId"] },
+                    { $eq: ["$topicId", objectTopicId] }
+                  ]
+                },
+                $or: [
+                  { subtopicId: { $exists: false } },
+                  { subtopicId: null }
+                ]
+              }
+            },
+            { $sort: { lastAttempted: -1 } },
+            { $limit: 1 }
+          ],
+          as: "progress"
+        }
+      },
+      {
+        $lookup: {
+          from: "attempts",
+          let: { userId: "$_id" },
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $and: [
+                    { $eq: ["$userId", "$$userId"] },
+                    { $eq: ["$quizId", objectTopicId] }
+                  ]
+                }
+              }
+            },
+            {
+              $group: {
+                _id: null,
+                attemptCount: { $sum: 1 },
+                bestAttemptScore: { $max: { $ifNull: ["$percentage", 0] } },
+                lastSubmittedAt: { $max: "$submittedAt" }
+              }
+            }
+          ],
+          as: "attemptStats"
+        }
+      },
+      {
+        $addFields: {
+          progressDoc: { $arrayElemAt: ["$progress", 0] },
+          attemptStats: { $arrayElemAt: ["$attemptStats", 0] }
+        }
+      },
+      {
+        $addFields: {
+          attemptCount: { $ifNull: ["$attemptStats.attemptCount", 0] },
+          hasAttempted: {
+            $gt: [{ $ifNull: ["$attemptStats.attemptCount", 0] }, 0]
+          },
+          bestScore: {
+            $ifNull: [
+              "$progressDoc.bestScore",
+              { $ifNull: ["$attemptStats.bestAttemptScore", 0] }
+            ]
+          },
+          isCleared: { $ifNull: ["$progressDoc.isCleared", false] },
+          lastAttempted: {
+            $ifNull: ["$progressDoc.lastAttempted", "$attemptStats.lastSubmittedAt"]
+          }
+        }
+      },
+      {
+        $project: {
+          _id: 0,
+          userId: "$_id",
+          name: { $ifNull: ["$name", "Unknown Student"] },
+          email: { $ifNull: ["$email", "No email available"] },
+          bestScore: { $ifNull: ["$bestScore", 0] },
+          isCleared: 1,
+          attemptCount: 1,
+          hasAttempted: 1,
+          lastAttempted: 1
+        }
+      },
+      {
+        $sort: {
+          hasAttempted: -1,
+          bestScore: -1,
+          name: 1
+        }
+      }
+    ]);
+
+    res.json(data);
+
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ message: "Error fetching student analytics" });
+  }
+};

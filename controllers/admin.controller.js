@@ -61,7 +61,7 @@ exports.getProgress=async(req,res)=>{
         if(!user){
             return res.status(404).json({message:"Student not found"});
         }
-        const progress=await Progress.find({userId});
+        const progress=await Progress.find({userId}).populate('topicId', 'name').populate('subtopicId', 'name');
         res.json({email:user.email,progress});
     }
     catch(err){

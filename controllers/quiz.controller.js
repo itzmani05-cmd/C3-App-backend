@@ -90,6 +90,9 @@ exports.getQuiz = async (req, res) => {
           .map(id => questionMap[id.toString()])
           .filter(Boolean);
 
+        // Reset startedAt on resume
+        await Attempt.findByIdAndUpdate(existingSession._id, { startedAt: new Date() });
+
         return res.json({
           sessionId: existingSession._id,
           questions: orderedQuestions.map(q => normalizeQuestion(q))
@@ -228,6 +231,9 @@ exports.getQuizBySubtopic = async (req, res) => {
                     questionMap[id.toString()]
                 ).filter(Boolean);
 
+                // Reset startedAt on resume
+                await Attempt.findByIdAndUpdate(existingSession._id, { startedAt: new Date() });
+
                 return res.json({
                     sessionId: existingSession._id,
                     questions: orderedQuestions.map(q => normalizeQuestion(q))
@@ -319,15 +325,12 @@ exports.submitQuiz = async (req, res) => {
       return res.status(400).json({ message: "Quiz already submitted" });
     }
 
-    const QUIZ_DURATION = 1250;
+    const QUIZ_DURATION = 3600 * 24; // 24 hours
     const elapsed =
       (Date.now() - new Date(session.startedAt).getTime()) / 1000;
 
-    if (!isTimedOut && elapsed > QUIZ_DURATION + 10) {
-      console.error("[SUBMIT] Time expired. Elapsed:", elapsed, "Max:", QUIZ_DURATION);
-      return res.status(400).json({
-        message: "Time expired"
-      });
+    if (!isTimedOut && elapsed > QUIZ_DURATION) {
+      console.log("[SUBMIT] Quiz submitted after 24 hours. Session:", session._id);
     }
     const order = session.questionOrder;
     console.log("[SUBMIT] Session retrieved from DB:", {
