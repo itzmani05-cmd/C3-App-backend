@@ -138,7 +138,7 @@ function getCorrectOptionIndex(question) {
     return objectOptionIndex;
   }
 
-  const correctAnswer = question?.correctAnswer;
+  const correctAnswer = question?.correctAnswer || question?.correct_answer;
 
   if (typeof correctAnswer === 'number' && Number.isFinite(correctAnswer)) {
     return normalizeNumericCorrectAnswer(correctAnswer, rawOptions, options.length);

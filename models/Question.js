@@ -11,6 +11,7 @@ const questionSchema = new mongoose.Schema({
   options: mongoose.Schema.Types.Mixed,
   optionImages: mongoose.Schema.Types.Mixed,
   correctAnswer: mongoose.Schema.Types.Mixed,
+  correct_answer: String,
   explanation: String,
   explanationImage: String,
   status: String,
