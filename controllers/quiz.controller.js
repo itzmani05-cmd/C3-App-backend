@@ -375,12 +375,16 @@ exports.submitQuiz = async (req, res) => {
     console.log("[SUBMIT] Starting answer evaluation for questions:", order.length);
 
     for (const qId of order) {
-      const rawQuestion = questionMap[qId.toString()];
+      let rawQuestion = questionMap[qId.toString()];
+      
+      // FALLBACK: Try finding by value if it's an ObjectId object
+      if (!rawQuestion && typeof qId === 'object') {
+          rawQuestion = questions.find(q => q._id.toString() === qId.toString());
+      }
 
       if (!rawQuestion) {
-        return res.status(500).json({
-          message: "Question mismatch error"
-        });
+        console.warn(`[SUBMIT] Question ${qId} not found in database for session ${sessionId}. Skipping this question.`);
+        continue;
       }
 
       const ans = answerMap[qId.toString()];
@@ -425,7 +429,7 @@ exports.submitQuiz = async (req, res) => {
       });
     }
 
-    const totalQuestions = order.length;
+    const totalQuestions = evaluatedAnswers.length;
     const percentage = totalQuestions
       ? (correct / totalQuestions) * 100
       : 0;
