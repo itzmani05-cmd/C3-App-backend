@@ -433,7 +433,7 @@ exports.submitQuiz = async (req, res) => {
     const percentage = totalQuestions
       ? (correct / totalQuestions) * 100
       : 0;
-    const passed = percentage >= 90;
+    const passed = percentage >= 80;
 
     if (subtopicId || topicId) {
       const progressPassed = await updateProgress({
