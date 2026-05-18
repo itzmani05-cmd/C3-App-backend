@@ -4,7 +4,7 @@ const mongoose=require('mongoose');
 const { getNextLesson } = require('../utils/learningPath');
 
 exports.updateProgress=async({userId, topicId=null, subtopicId=null, percentage})=>{
-    const passed=percentage>=90;
+    const passed=percentage>=80;
     const filter = subtopicId
         ? {userId, subtopicId}
         : {userId, topicId, subtopicId:null};

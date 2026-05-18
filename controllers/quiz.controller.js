@@ -22,9 +22,6 @@ exports.getQuiz = async (req, res) => {
       return res.status(401).json({ message: "User not authenticated" });
     }
 
-    // =========================
-    // 🔁 RESUME EXISTING SESSION (BY sessionId)
-    // =========================
     if (sessionId) {
       const session = await Attempt.findById(sessionId).lean();
 
@@ -451,6 +448,51 @@ exports.submitQuiz = async (req, res) => {
         });
       }
 
+      // ========================================
+      // 🔓 AUTO-UNLOCK AFTER 3 ATTEMPTS (regardless of score)
+      // ========================================
+      const quizIdentifier = subtopicId || topicId;
+      // Cast to ObjectId for proper DB matching
+      const quizObjectId = mongoose.Types.ObjectId.isValid(quizIdentifier)
+        ? new mongoose.Types.ObjectId(quizIdentifier)
+        : quizIdentifier;
+      const userObjectId = mongoose.Types.ObjectId.isValid(userId)
+        ? new mongoose.Types.ObjectId(userId)
+        : userId;
+
+      // Count previously submitted attempts (current attempt not yet saved)
+      // So >= 2 previous + 1 current = 3 total attempts
+      const attemptCount = await Attempt.countDocuments({
+        userId: userObjectId,
+        quizId: quizObjectId,
+        isSubmitted: true
+      });
+      console.log("[SUBMIT] Previous submitted attempts for quiz", quizIdentifier, ":", attemptCount, "(current attempt not yet saved)");
+
+      if (attemptCount >= 2) {
+        console.log("[SUBMIT] 3rd+ attempt reached (2 previous + current). Auto-unlocking next lesson.");
+
+        // Mark current lesson as cleared so learning path recognizes it
+        await Progress.findOneAndUpdate(
+          subtopicId
+            ? { userId, subtopicId }
+            : { userId, topicId, subtopicId: null },
+          {
+            $set: {
+              isCleared: true,
+              topicId: topicId || null,
+              subtopicId: subtopicId || null
+            }
+          },
+          { upsert: true }
+        );
+
+        await unlockNextLesson(userId, {
+          currentTopicId: topicId,
+          currentSubtopicId: subtopicId
+        });
+      }
+
       await Progress.findOneAndUpdate(
         subtopicId
           ? { userId, subtopicId }
@@ -462,7 +504,7 @@ exports.submitQuiz = async (req, res) => {
             subtopicId: subtopicId || null,
             lastAttempted: new Date(),
             ...(percentage === 100 && { isMastered: true }),
-            ...(percentage >= 90 && { isCleared: true })
+            ...(percentage >= 80 && { isCleared: true })
           }
         },
         { upsert: true }
@@ -472,7 +514,7 @@ exports.submitQuiz = async (req, res) => {
     session.score = correct;
     session.totalQuestions = totalQuestions;
     session.percentage = percentage;
-    session.isExplanationUnlocked = percentage >= 85;
+    session.isExplanationUnlocked = percentage >= 80;
     session.isPassed = passed;
     session.isSubmitted = true;
     session.isTimedOut = Boolean(isTimedOut);
