@@ -11,7 +11,7 @@ const attemptSchema = new mongoose.Schema({
 const Attempt = mongoose.model('Attempt', attemptSchema);
 
 async function check() {
-  const uri = process.env.MONGO_URI || 'mongodb+srv://mali2403717710622031_db_user:Uh4zTGzaftBe39Qn@cluster0.rj0fosb.mongodb.net/quizApp';
+  const uri = process.env.MONGO_URI;
   console.log("Connecting to:", uri.replace(/:([^:@]+)@/, ":****@"));
   await mongoose.connect(uri);
   console.log("Connected to DB");
