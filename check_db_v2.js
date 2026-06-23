@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 require('dotenv').config();
 
 async function check() {
-  const uri = process.env.MONGO_URI || 'mongodb+srv://mali2403717710622031_db_user:Uh4zTGzaftBe39Qn@cluster0.rj0fosb.mongodb.net/quizApp';
+  const uri = process.env.MONGO_URI;
   await mongoose.connect(uri);
   console.log("Connected to DB");
 
