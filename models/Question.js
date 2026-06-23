@@ -22,7 +22,13 @@ const questionSchema = new mongoose.Schema({
   isActive: Boolean,
   isVerified: Boolean,
   createdAt: Date,
-  timestamp: Date
+  timestamp: Date,
+});
+
+questionSchema.index({
+    unitId: 1,
+    topicId: 1,
+    subtopicId: 1
 });
 
 module.exports = mongoose.model('Question', questionSchema);

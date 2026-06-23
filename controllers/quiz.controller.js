@@ -60,9 +60,6 @@ exports.getQuiz = async (req, res) => {
       });
     }
 
-    // =========================
-    // 🔁 CHECK EXISTING ACTIVE SESSION
-    // =========================
     const existingSession = await Attempt.findOne({
       userId,
       quizId: topicId,
