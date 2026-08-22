@@ -1,4 +1,5 @@
 const User=require('../models/User');
+const { hashPassword, verifyPassword, isBcryptHash } = require('../utils/password');
 
 exports.changePassword=async(req,res)=>{
     try{
@@ -17,11 +18,13 @@ exports.changePassword=async(req,res)=>{
         if(!user){
             return res.status(404).json({message:"User not found"});
         }
-        if(user.password!==oldPassword){
+
+        const oldPasswordMatches=await verifyPassword(oldPassword,user.password);
+        if(!oldPasswordMatches){
             return res.status(400).json({message:"Old password is incorrect"});
         }
 
-        user.password=newPassword;
+        user.password=await hashPassword(newPassword);
         await user.save();
 
         res.json({message:"Password changed successfully"});
@@ -35,7 +38,10 @@ exports.changePassword=async(req,res)=>{
 exports.register=async(req,res)=>{
     try{
         const data=req.body;
-        data.email=data.email?.trim?.toLowerCase();
+        data.email=data.email?.trim()?.toLowerCase();
+        if(data.password){
+            data.password=await hashPassword(data.password);
+        }
         const user=await User.create(data);
         res.json(user);
     }
@@ -55,14 +61,25 @@ exports.login=async(req,res)=>{
             return res.status(400).json({message:"Email and password are required"});
         }
 
-        const query={email,password};
+        const query={email};
         if(role){
             query.role=role;
         }
 
-        const user=await User.findOne(query).lean();
+        const user=await User.findOne(query);
         if(!user){
             return res.status(401).json({message:"Invalid credentials"});
+        }
+
+        const passwordMatches=await verifyPassword(password,user.password);
+        if(!passwordMatches){
+            return res.status(401).json({message:"Invalid credentials"});
+        }
+
+        if(!isBcryptHash(user.password)){
+            // Migrate legacy plaintext password to a hash now that it's been verified.
+            user.password=await hashPassword(password);
+            await user.save();
         }
 
         if(user.isActive===false){

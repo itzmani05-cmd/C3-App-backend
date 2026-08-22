@@ -3,6 +3,7 @@ const Question=require('../models/Question');
 const Progress=require('../models/Progress');
 const mongoose=require('mongoose');
 const { normalizeQuestion } = require('../utils/questionFormat');
+const { hashPassword } = require('../utils/password');
 
 exports.createStudent=async(req,res)=>{
     try{
@@ -12,7 +13,7 @@ exports.createStudent=async(req,res)=>{
             return res.status(400).json({message:'User already exists'});
         }
         const newUser=new User({
-            email,password,role:'student'
+            email,password:await hashPassword(password),role:'student'
         });
         await newUser.save();
         res.json({
