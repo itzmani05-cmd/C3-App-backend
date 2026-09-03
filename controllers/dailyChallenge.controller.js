@@ -74,6 +74,14 @@ exports.getToday = async (req, res) => {
       return res.json({ challenge: null });
     }
 
+    // Defensive: a challenge published without a questionSnapshot (e.g. from a publish path that
+    // predates snapshot-building, or bad data) can't be rendered — surface it as "no challenge" to
+    // the student rather than crashing the whole endpoint.
+    if (!Array.isArray(challenge.questionSnapshot) || challenge.questionSnapshot.length === 0) {
+      console.error('DAILY CHALLENGE MISSING SNAPSHOT:', challenge._id);
+      return res.json({ challenge: null });
+    }
+
     const progress = await DailyChallengeProgress.findOne({
       challengeId: challenge._id,
       userId,
@@ -121,6 +129,9 @@ exports.startAttempt = async (req, res) => {
     const challenge = await DailyChallenge.findOne({ _id: challengeId, status: 'published' }).lean();
     if (!challenge) {
       return res.status(404).json({ message: 'Daily challenge not found' });
+    }
+    if (!Array.isArray(challenge.questionSnapshot) || challenge.questionSnapshot.length === 0) {
+      return res.status(422).json({ message: 'This challenge has no usable questions' });
     }
 
     const now = Date.now();
