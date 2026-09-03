@@ -107,6 +107,26 @@ function describeLearningItem(id, lookup) {
   };
 }
 
+exports.savePushToken = async (req, res) => {
+  try {
+    const userId = getRequestUserId(req);
+    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ message: 'Invalid user id' });
+    }
+
+    const { token } = req.body;
+    if (typeof token !== 'string' || !token.trim()) {
+      return res.status(400).json({ message: 'A push token is required' });
+    }
+
+    await User.findByIdAndUpdate(userId, { expoPushToken: token.trim() });
+    res.json({ message: 'Push token saved' });
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ message: 'Error saving push token' });
+  }
+};
+
 exports.getProfile = async (req, res) => {
   try {
     const userId = getRequestUserId(req);

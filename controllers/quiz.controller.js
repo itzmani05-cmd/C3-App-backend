@@ -429,6 +429,23 @@ exports.submitQuiz = async (req, res) => {
       : 0;
     const passed = percentage >= 80;
 
+    // Count previously submitted attempts on this exact quiz session's quizId (current attempt not
+    // yet saved), so >= 2 previous + 1 current = 3 total attempts. Computed once here (rather than
+    // only inside the topicId/subtopicId branch below) so it's also available to gate the answer
+    // review further down, regardless of whether progress tracking applies to this quiz.
+    const userObjectId = mongoose.Types.ObjectId.isValid(userId)
+      ? new mongoose.Types.ObjectId(userId)
+      : userId;
+    const attemptCount = await Attempt.countDocuments({
+      userId: userObjectId,
+      quizId: session.quizId,
+      isSubmitted: true
+    });
+    console.log("[SUBMIT] Previous submitted attempts for quiz", session.quizId, ":", attemptCount, "(current attempt not yet saved)");
+
+    const MAX_QUIZ_ATTEMPTS = 3;
+    const attemptsExhausted = attemptCount + 1 >= MAX_QUIZ_ATTEMPTS;
+
     if (subtopicId || topicId) {
       const progressPassed = await updateProgress({
         userId,
@@ -448,24 +465,6 @@ exports.submitQuiz = async (req, res) => {
       // ========================================
       // 🔓 AUTO-UNLOCK AFTER 3 ATTEMPTS (regardless of score)
       // ========================================
-      const quizIdentifier = subtopicId || topicId;
-      // Cast to ObjectId for proper DB matching
-      const quizObjectId = mongoose.Types.ObjectId.isValid(quizIdentifier)
-        ? new mongoose.Types.ObjectId(quizIdentifier)
-        : quizIdentifier;
-      const userObjectId = mongoose.Types.ObjectId.isValid(userId)
-        ? new mongoose.Types.ObjectId(userId)
-        : userId;
-
-      // Count previously submitted attempts (current attempt not yet saved)
-      // So >= 2 previous + 1 current = 3 total attempts
-      const attemptCount = await Attempt.countDocuments({
-        userId: userObjectId,
-        quizId: quizObjectId,
-        isSubmitted: true
-      });
-      console.log("[SUBMIT] Previous submitted attempts for quiz", quizIdentifier, ":", attemptCount, "(current attempt not yet saved)");
-
       if (attemptCount >= 2) {
         console.log("[SUBMIT] 3rd+ attempt reached (2 previous + current). Auto-unlocking next lesson.");
 
@@ -511,7 +510,9 @@ exports.submitQuiz = async (req, res) => {
     session.score = correct;
     session.totalQuestions = totalQuestions;
     session.percentage = percentage;
-    session.isExplanationUnlocked = percentage >= 80;
+    // Answer review unlocks on passing OR once the student has used all their attempts — otherwise a
+    // student who never passes could never see the correct answers/explanations.
+    session.isExplanationUnlocked = passed || attemptsExhausted;
     session.isPassed = passed;
     session.isSubmitted = true;
     session.isTimedOut = Boolean(isTimedOut);
@@ -536,6 +537,10 @@ exports.submitQuiz = async (req, res) => {
       score: correct,
       percentage,
       passed,
+      attemptNumber: attemptCount + 1,
+      maxAttempts: MAX_QUIZ_ATTEMPTS,
+      attemptsExhausted,
+      reviewUnlocked: session.isExplanationUnlocked,
       message: passed ? "Unlocked" : "Retry"
     });
 

@@ -35,38 +35,16 @@ exports.changePassword=async(req,res)=>{
     }
 };
 
-exports.register=async(req,res)=>{
-    try{
-        const data=req.body;
-        data.email=data.email?.trim()?.toLowerCase();
-        if(data.password){
-            data.password=await hashPassword(data.password);
-        }
-        const user=await User.create(data);
-        res.json(user);
-    }
-    catch(err){
-        console.log(err);
-        res.status(500).json({message:"Error creating user"});
-    }
-};
-
 exports.login=async(req,res)=>{
     try{
         const email=req.body?.email?.trim()?.toLowerCase();
         const password=req.body?.password;
-        const role=req.body?.role;
 
         if(!email || !password){
             return res.status(400).json({message:"Email and password are required"});
         }
 
-        const query={email};
-        if(role){
-            query.role=role;
-        }
-
-        const user=await User.findOne(query);
+        const user=await User.findOne({email,role:'student'});
         if(!user){
             return res.status(401).json({message:"Invalid credentials"});
         }

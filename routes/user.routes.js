@@ -6,5 +6,6 @@ const user = require('../controllers/user.controller');
 
 router.get('/profile', auth, user.getProfile);
 router.get('/dashboard', auth, user.getDashboard);
+router.post('/push-token', auth, user.savePushToken);
 
 module.exports = router;

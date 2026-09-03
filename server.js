@@ -8,9 +8,11 @@ const connectDB=require('./config/db');
 const authRoutes=require('./routes/auth.routes');
 const quizRoutes=require('./routes/quiz.routes');
 const contentRoutes=require('./routes/content.routes');
-const adminRoutes=require('./routes/admin.routes');
 const userRoutes=require('./routes/user.routes');
 const progressRoutes=require('./routes/progress.routes');
+const dailyChallengeRoutes=require('./routes/dailyChallenge.routes');
+const notificationRoutes=require('./routes/notification.routes');
+const { runDailyChallengeReminderSweep } = require('./jobs/dailyChallengeReminderJob');
 
 const app=express();
 connectDB();
@@ -30,9 +32,26 @@ app.use(limiter);
 app.use('/api/auth',authRoutes);
 app.use('/api/quiz',quizRoutes);
 app.use('/api/content',contentRoutes);
-app.use('/api/admin',adminRoutes);
 app.use('/api/progress',progressRoutes);
 app.use('/api/user',userRoutes);
+app.use('/api/daily-challenge',dailyChallengeRoutes);
+app.use('/api/notifications',notificationRoutes);
+
+const REMINDER_SWEEP_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
+let reminderSweepRunning = false;
+
+function scheduleDailyChallengeReminderSweep() {
+  if (reminderSweepRunning) return; // guard against overlapping runs if a sweep is still in flight
+  reminderSweepRunning = true;
+  runDailyChallengeReminderSweep()
+    .catch((err) => console.error('[dailyChallengeReminderJob] sweep error:', err.message))
+    .finally(() => {
+      reminderSweepRunning = false;
+    });
+}
+
+setInterval(scheduleDailyChallengeReminderSweep, REMINDER_SWEEP_INTERVAL_MS);
+scheduleDailyChallengeReminderSweep();
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, "0.0.0.0", () => {
