@@ -6,7 +6,7 @@ const userSchema = new mongoose.Schema({
   password: String,
   role: { type: String, default: "student" },
   status: String,
-  examIds: [mongoose.Schema.Types.ObjectId],
+  examIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Exam' }],
   isActive: Boolean,
   expoPushToken: String,
   createdAt: Date,

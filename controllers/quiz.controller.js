@@ -3,7 +3,14 @@ const Attempt = require('../models/Attempt');
 const Progress = require('../models/Progress');
 const mongoose = require('mongoose');
 
-const { getCorrectOptionIndex, normalizeQuestion } = require('../utils/questionFormat');
+const {
+  getAnswerType,
+  getCorrectOptionIndex,
+  getCorrectOptionIndexes,
+  getNumericalAnswer,
+  isNumericalAnswerCorrect,
+  normalizeQuestion,
+} = require('../utils/questionFormat');
 const { getLearningPathForUser, getLessonKey } = require('../utils/learningPath');
 const { updateProgress, unlockNextLesson } = require('./progress.controller');
 
@@ -358,7 +365,12 @@ exports.submitQuiz = async (req, res) => {
 
     const answerMap = {};
     answers.forEach(a => {
-      if (a?.questionId && typeof a.selectedOptionIndex === "number") {
+      if (
+        a?.questionId &&
+        (typeof a.selectedOptionIndex === "number" ||
+          Array.isArray(a.selectedOptionIndexes) ||
+          typeof a.selectedNumericalAnswer === "string")
+      ) {
         answerMap[a.questionId] = a;
       }
     });
@@ -383,35 +395,61 @@ exports.submitQuiz = async (req, res) => {
 
       const ans = answerMap[qId.toString()];
       const q = normalizeQuestion(rawQuestion);
+      const answerType = getAnswerType(rawQuestion);
 
       let isCorrect = false;
       let selectedIndex = null;
+      let selectedIndexes = null;
+      let selectedNumericalAnswer = null;
 
-      if (ans && typeof ans.selectedOptionIndex === "number") {
-        selectedIndex = ans.selectedOptionIndex;
-
-        if (
-          selectedIndex < 0 ||
-          selectedIndex >= (q.options?.length || 0)
-        ) {
-          selectedIndex = null;
+      if (answerType === "multiple") {
+        if (ans && Array.isArray(ans.selectedOptionIndexes)) {
+          selectedIndexes = ans.selectedOptionIndexes.filter(
+            (idx) => typeof idx === "number" && idx >= 0 && idx < (q.options?.length || 0)
+          );
         }
-      }
 
-      const selectedOption =
-        selectedIndex !== null ? q.options[selectedIndex] : null;
+        const correctIndexes = getCorrectOptionIndexes(rawQuestion);
+        if (selectedIndexes && correctIndexes.length > 0) {
+          const selectedSet = new Set(selectedIndexes);
+          const correctSet = new Set(correctIndexes);
+          isCorrect =
+            selectedSet.size === correctSet.size &&
+            [...selectedSet].every((idx) => correctSet.has(idx));
+        }
+      } else if (answerType === "numerical") {
+        if (ans && typeof ans.selectedNumericalAnswer === "string") {
+          selectedNumericalAnswer = ans.selectedNumericalAnswer;
+        }
 
-      const correctOptionIndex = getCorrectOptionIndex(rawQuestion);
+        isCorrect = isNumericalAnswerCorrect(selectedNumericalAnswer, getNumericalAnswer(rawQuestion));
+      } else {
+        if (ans && typeof ans.selectedOptionIndex === "number") {
+          selectedIndex = ans.selectedOptionIndex;
 
-      if (selectedOption && typeof selectedOption === "object") {
-        isCorrect = Boolean(selectedOption.isCorrect);
-      } else if (
-        correctOptionIndex !== -1 &&
-        selectedIndex !== null
-      ) {
-        isCorrect = selectedIndex === correctOptionIndex;
-      } else if (typeof selectedOption === "string") {
-        isCorrect = selectedOption === q.correctAnswer;
+          if (
+            selectedIndex < 0 ||
+            selectedIndex >= (q.options?.length || 0)
+          ) {
+            selectedIndex = null;
+          }
+        }
+
+        const selectedOption =
+          selectedIndex !== null ? q.options[selectedIndex] : null;
+
+        const correctOptionIndex = getCorrectOptionIndex(rawQuestion);
+
+        if (selectedOption && typeof selectedOption === "object") {
+          isCorrect = Boolean(selectedOption.isCorrect);
+        } else if (
+          correctOptionIndex !== -1 &&
+          selectedIndex !== null
+        ) {
+          isCorrect = selectedIndex === correctOptionIndex;
+        } else if (typeof selectedOption === "string") {
+          isCorrect = selectedOption === q.correctAnswer;
+        }
       }
 
       if (isCorrect) correct++;
@@ -419,6 +457,8 @@ exports.submitQuiz = async (req, res) => {
       evaluatedAnswers.push({
         questionId: qId,
         selectedOptionIndex: selectedIndex,
+        selectedOptionIndexes: selectedIndexes,
+        selectedNumericalAnswer,
         isCorrect
       });
     }

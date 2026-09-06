@@ -61,9 +61,14 @@ function groupById(items, keyName) {
   }, new Map());
 }
 
-async function fetchActiveContentTree() {
+async function fetchActiveContentTree({ examId } = {}) {
+  const unitFilter = { isActive: { $ne: false } };
+  if (examId && mongoose.Types.ObjectId.isValid(String(examId))) {
+    unitFilter.examId = examId;
+  }
+
   const [units, topics, subtopics] = await Promise.all([
-    Unit.find({ isActive: { $ne: false } }).lean(),
+    Unit.find(unitFilter).lean(),
     Topic.find({ isActive: { $ne: false } }).lean(),
     Subtopic.find({ isActive: { $ne: false } }).lean(),
   ]);
@@ -233,8 +238,8 @@ function applyProgressToTree(contentTree, progressDocs = []) {
   };
 }
 
-async function getLearningPathForUser(userId) {
-  const contentTree = await fetchActiveContentTree();
+async function getLearningPathForUser(userId, { examId } = {}) {
+  const contentTree = await fetchActiveContentTree({ examId });
 
   if (!userId || !mongoose.Types.ObjectId.isValid(String(userId))) {
     return applyProgressToTree(contentTree, []);

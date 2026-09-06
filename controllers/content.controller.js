@@ -9,9 +9,13 @@ const {
 
 exports.getUnits=async(req,res)=>{
     try{
-        const units=await Unit.find({
-            isActive:{$ne:false}
-        }).sort({order:1});
+        const { examId } = req.query;
+        const filter = { isActive:{$ne:false} };
+        if (examId && mongoose.Types.ObjectId.isValid(examId)) {
+            filter.examId = examId;
+        }
+
+        const units=await Unit.find(filter).sort({order:1});
         res.json(units);
     }
     catch(err){
@@ -66,7 +70,7 @@ exports.getSubtopics = async (req, res) => {
 exports.getLearningPath = async (req, res) => {
   try {
     const userId = req.headers.userid || req.query.userId;
-    const learningPath = await getLearningPathForUser(userId);
+    const learningPath = await getLearningPathForUser(userId, { examId: req.query.examId });
 
     res.json({
       units: learningPath.units,

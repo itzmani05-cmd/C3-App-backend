@@ -7,7 +7,10 @@ const questionSnapshotSchema = new mongoose.Schema({
   questionImage: String,
   options: [mongoose.Schema.Types.Mixed],
   optionImages: [String],
+  answerType: { type: String, default: 'single' },
   correctOptionIndex: Number,
+  correctOptionIndexes: [Number],
+  numericalAnswer: String,
   explanation: String,
   explanationImage: String,
   topicId: mongoose.Schema.Types.ObjectId,
@@ -16,6 +19,7 @@ const questionSnapshotSchema = new mongoose.Schema({
 
 const dailyChallengeSchema = new mongoose.Schema({
   title: String,
+  examId: mongoose.Schema.Types.ObjectId,
   status: { type: String, enum: ['draft', 'published', 'archived'], default: 'draft' },
 
   questionIds: [mongoose.Schema.Types.ObjectId],

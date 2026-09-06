@@ -29,6 +29,12 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
+// Startup connectivity ping the client fires on launch (App.js pingApi()) — was previously
+// unimplemented, so every app launch logged a 404 for no functional reason.
+app.get('/api/test', (req, res) => {
+  res.json({ status: 'ok' });
+});
+
 app.use('/api/auth',authRoutes);
 app.use('/api/quiz',quizRoutes);
 app.use('/api/content',contentRoutes);

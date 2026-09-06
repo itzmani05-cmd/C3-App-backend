@@ -3,12 +3,18 @@ const mongoose = require('mongoose');
 const dailyChallengeAttemptSchema = new mongoose.Schema({
   challengeId: mongoose.Schema.Types.ObjectId,
   userId: mongoose.Schema.Types.ObjectId,
+  // Populated from the User doc at attempt-start time so this shared collection's website-defined
+  // unique index on {challengeId, studentEmail, attemptNumber} scopes correctly per real student
+  // instead of colliding across different mobile users (see dailyChallenge.controller.js startAttempt).
+  studentEmail: String,
   attemptNumber: Number,
 
   responses: [
     {
       questionId: mongoose.Schema.Types.ObjectId,
       selectedOptionIndex: Number,
+      selectedOptionIndexes: [Number],
+      selectedNumericalAnswer: String,
       isCorrect: Boolean,
     },
   ],

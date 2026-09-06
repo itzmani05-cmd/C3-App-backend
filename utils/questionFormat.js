@@ -79,6 +79,56 @@ function normalizeNumericCorrectAnswer(value, rawOptions, optionsLength) {
   return -1;
 }
 
+function getAnswerType(question) {
+  return question?.answerType || 'single';
+}
+
+function getCorrectOptionIndexes(question) {
+  const rawOptions = question?.options;
+  const options = normalizeQuestionOptions(rawOptions);
+  const correctAnswer = question?.correctAnswer || question?.correct_answer;
+
+  if (!Array.isArray(correctAnswer) || options.length === 0) {
+    return [];
+  }
+
+  const orderedKeys = looksLikeKeyedOptions(rawOptions) ? getOrderedObjectKeys(rawOptions) : [];
+
+  const indexes = correctAnswer
+    .map((entry) => {
+      const key = String(entry || '').trim().toLowerCase();
+      if (!key) return -1;
+
+      const keyedIndex = orderedKeys.findIndex((k) => k.toLowerCase() === key);
+      if (keyedIndex !== -1) return keyedIndex;
+
+      const alphabetIndex = key.charCodeAt(0) - 97;
+      return alphabetIndex >= 0 && alphabetIndex < options.length ? alphabetIndex : -1;
+    })
+    .filter((idx) => idx >= 0);
+
+  return Array.from(new Set(indexes)).sort((a, b) => a - b);
+}
+
+function getNumericalAnswer(question) {
+  const correctAnswer = question?.correctAnswer || question?.correct_answer;
+  return correctAnswer == null ? '' : String(correctAnswer).trim();
+}
+
+function isNumericalAnswerCorrect(submitted, correct) {
+  const a = String(submitted == null ? '' : submitted).trim();
+  const b = String(correct == null ? '' : correct).trim();
+  if (!a || !b) return false;
+
+  const numA = Number(a);
+  const numB = Number(b);
+  if (Number.isFinite(numA) && Number.isFinite(numB)) {
+    return numA === numB;
+  }
+
+  return a.toLowerCase() === b.toLowerCase();
+}
+
 function getOptionText(option) {
   if (typeof option === 'string') {
     return option;
@@ -184,18 +234,32 @@ function normalizeQuestion(question) {
   const options = normalizeQuestionOptions(question?.options);
   const optionImages = normalizeQuestionOptionImages(question?.optionImages, question?.options);
   const correctOptionIndex = getCorrectOptionIndex(question);
+  const answerType = getAnswerType(question);
 
-  return {
+  const normalized = {
     ...question,
     options,
     optionImages,
+    answerType,
     correctAnswer: correctOptionIndex >= 0 ? correctOptionIndex : question?.correctAnswer,
   };
+
+  if (answerType === 'multiple') {
+    normalized.correctOptionIndexes = getCorrectOptionIndexes(question);
+  } else if (answerType === 'numerical') {
+    normalized.numericalAnswer = getNumericalAnswer(question);
+  }
+
+  return normalized;
 }
 
 module.exports = {
+  getAnswerType,
   getCorrectOptionIndex,
+  getCorrectOptionIndexes,
+  getNumericalAnswer,
   getOptionText,
+  isNumericalAnswerCorrect,
   normalizeQuestion,
   normalizeQuestionOptionImages,
   normalizeQuestionOptions,

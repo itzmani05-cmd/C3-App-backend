@@ -1,4 +1,13 @@
-const { getCorrectOptionIndex, getOptionText, normalizeQuestionOptions, normalizeQuestionOptionImages } = require('./questionFormat');
+const {
+  getAnswerType,
+  getCorrectOptionIndex,
+  getCorrectOptionIndexes,
+  getNumericalAnswer,
+  getOptionText,
+  isNumericalAnswerCorrect,
+  normalizeQuestionOptions,
+  normalizeQuestionOptionImages,
+} = require('./questionFormat');
 const DailyChallengeProgress = require('../models/DailyChallengeProgress');
 const DailyChallenge = require('../models/DailyChallenge');
 const Notification = require('../models/Notification');
@@ -34,6 +43,7 @@ function buildQuestionSnapshot(questionDocs, orderedIds) {
     const options = normalizeQuestionOptions(q.options);
     const optionImages = normalizeQuestionOptionImages(q.optionImages, q.options);
     const correctOptionIndex = getCorrectOptionIndex(q);
+    const answerType = getAnswerType(q);
 
     return {
       questionId: q._id,
@@ -42,7 +52,10 @@ function buildQuestionSnapshot(questionDocs, orderedIds) {
       questionImage: q.questionImage || '',
       options: options.map((opt) => getOptionText(opt)),
       optionImages,
+      answerType,
       correctOptionIndex,
+      correctOptionIndexes: answerType === 'multiple' ? getCorrectOptionIndexes(q) : [],
+      numericalAnswer: answerType === 'numerical' ? getNumericalAnswer(q) : '',
       explanation: q.explanation || '',
       explanationImage: q.explanationImage || '',
       topicId: q.topicId || null,
@@ -60,11 +73,14 @@ function stripForAttempt(snapshotQuestion) {
     questionImage: snapshotQuestion.questionImage,
     options: snapshotQuestion.options,
     optionImages: snapshotQuestion.optionImages,
+    answerType: snapshotQuestion.answerType || 'single',
   };
 }
 
 // Question payload sent to a student AFTER reveal is allowed (3rd attempt or expiry).
-function revealForAttempt(snapshotQuestion, selectedOptionIndex) {
+function revealForAttempt(snapshotQuestion, response) {
+  const selectedOptionIndex = typeof response === 'number' ? response : response?.selectedOptionIndex;
+
   return {
     questionId: snapshotQuestion.questionId,
     order: snapshotQuestion.order,
@@ -72,8 +88,13 @@ function revealForAttempt(snapshotQuestion, selectedOptionIndex) {
     questionImage: snapshotQuestion.questionImage,
     options: snapshotQuestion.options,
     optionImages: snapshotQuestion.optionImages,
+    answerType: snapshotQuestion.answerType || 'single',
     correctOptionIndex: snapshotQuestion.correctOptionIndex,
+    correctOptionIndexes: snapshotQuestion.correctOptionIndexes || [],
+    numericalAnswer: snapshotQuestion.numericalAnswer || '',
     selectedOptionIndex: typeof selectedOptionIndex === 'number' ? selectedOptionIndex : null,
+    selectedOptionIndexes: Array.isArray(response?.selectedOptionIndexes) ? response.selectedOptionIndexes : [],
+    selectedNumericalAnswer: typeof response?.selectedNumericalAnswer === 'string' ? response.selectedNumericalAnswer : '',
     explanation: snapshotQuestion.explanation && snapshotQuestion.explanation.trim()
       ? snapshotQuestion.explanation
       : 'No explanation provided.',
@@ -136,28 +157,70 @@ async function consumeAttemptSlot(challengeId, userId) {
 function scoreAgainstSnapshot(questionSnapshot, submittedResponses) {
   const answerMap = new Map();
   (submittedResponses || []).forEach((r) => {
-    if (r && r.questionId && typeof r.selectedOptionIndex === 'number') {
-      answerMap.set(String(r.questionId), r.selectedOptionIndex);
+    if (
+      r &&
+      r.questionId &&
+      (typeof r.selectedOptionIndex === 'number' ||
+        Array.isArray(r.selectedOptionIndexes) ||
+        typeof r.selectedNumericalAnswer === 'string')
+    ) {
+      answerMap.set(String(r.questionId), r);
     }
   });
 
   let score = 0;
   const evaluated = questionSnapshot.map((q) => {
-    let selectedOptionIndex = answerMap.has(String(q.questionId)) ? answerMap.get(String(q.questionId)) : null;
-    if (
-      typeof selectedOptionIndex !== 'number' ||
-      selectedOptionIndex < 0 ||
-      selectedOptionIndex >= (q.options?.length || 0)
-    ) {
-      selectedOptionIndex = null;
+    const answerType = q.answerType || 'single';
+    const submitted = answerMap.get(String(q.questionId));
+
+    let selectedOptionIndex = null;
+    let selectedOptionIndexes = null;
+    let selectedNumericalAnswer = null;
+    let isCorrect = false;
+
+    if (answerType === 'multiple') {
+      if (submitted && Array.isArray(submitted.selectedOptionIndexes)) {
+        selectedOptionIndexes = submitted.selectedOptionIndexes.filter(
+          (idx) => typeof idx === 'number' && idx >= 0 && idx < (q.options?.length || 0)
+        );
+      }
+
+      const correctIndexes = q.correctOptionIndexes || [];
+      if (selectedOptionIndexes && correctIndexes.length > 0) {
+        const selectedSet = new Set(selectedOptionIndexes);
+        const correctSet = new Set(correctIndexes);
+        isCorrect =
+          selectedSet.size === correctSet.size &&
+          [...selectedSet].every((idx) => correctSet.has(idx));
+      }
+    } else if (answerType === 'numerical') {
+      if (submitted && typeof submitted.selectedNumericalAnswer === 'string') {
+        selectedNumericalAnswer = submitted.selectedNumericalAnswer;
+      }
+
+      isCorrect = isNumericalAnswerCorrect(selectedNumericalAnswer, q.numericalAnswer);
+    } else {
+      if (submitted && typeof submitted.selectedOptionIndex === 'number') {
+        selectedOptionIndex = submitted.selectedOptionIndex;
+      }
+      if (
+        typeof selectedOptionIndex !== 'number' ||
+        selectedOptionIndex < 0 ||
+        selectedOptionIndex >= (q.options?.length || 0)
+      ) {
+        selectedOptionIndex = null;
+      }
+
+      isCorrect = selectedOptionIndex !== null && selectedOptionIndex === q.correctOptionIndex;
     }
 
-    const isCorrect = selectedOptionIndex !== null && selectedOptionIndex === q.correctOptionIndex;
     if (isCorrect) score += 1;
 
     return {
       questionId: q.questionId,
       selectedOptionIndex,
+      selectedOptionIndexes,
+      selectedNumericalAnswer,
       isCorrect,
     };
   });
@@ -269,6 +332,37 @@ async function computeStreak(userId) {
   return { currentStreak, longestStreak };
 }
 
+// Per-day completion timeline for a streak graph — the last `limit` published/archived challenges,
+// oldest first (left-to-right), each flagged with whether this student completed it. Reuses the
+// same completedSet logic as computeStreak, just over a bounded, ordered window instead of folding
+// it into a single streak count.
+async function getStreakHistory(userId, limit = 14) {
+  const challenges = await DailyChallenge.find({ status: { $in: ['published', 'archived'] } })
+    .select('_id dateKey publishedAt')
+    .sort({ publishedAt: -1 })
+    .limit(limit)
+    .lean();
+
+  if (!challenges.length) return [];
+
+  const challengeIds = challenges.map((c) => c._id);
+  const completedProgress = await DailyChallengeProgress.find({
+    userId,
+    challengeId: { $in: challengeIds },
+    attemptsSubmitted: { $gte: 1 },
+  })
+    .select('challengeId')
+    .lean();
+  const completedSet = new Set(completedProgress.map((p) => String(p.challengeId)));
+
+  return challenges
+    .map((c) => ({
+      dateKey: c.dateKey,
+      completed: completedSet.has(String(c._id)),
+    }))
+    .reverse();
+}
+
 // Batch version of computeStreak for a leaderboard: one query for the challenge timeline and one
 // query for every relevant progress row, instead of computeStreak's two queries per user.
 async function computeStreaksForUsers(userIds) {
@@ -323,6 +417,68 @@ async function computeStreaksForUsers(userIds) {
   return streakByUserId;
 }
 
+// A missed day should actively cost points, not just fail to add any — otherwise ignoring the
+// Daily Challenge is free. Attempted challenges add their best score (0-5); every published/
+// archived challenge a student never attempted subtracts this many points instead of contributing 0.
+const MISSED_DAY_PENALTY = 10;
+
+// Leaderboard points for a batch of users: sum of bestScore over attempted challenges, minus
+// MISSED_DAY_PENALTY for each challenge left unattempted — but only for challenges published on
+// or after the student's own account was created, so nobody is penalized for challenges that ran
+// before they even had the app.
+async function computeLeaderboardPoints(userIds) {
+  const uniqueUserIds = [...new Set(userIds.map((id) => String(id)))];
+  const pointsByUserId = new Map(uniqueUserIds.map((id) => [id, { totalPoints: 0, challengesCompleted: 0 }]));
+
+  const challenges = await DailyChallenge.find({ status: { $in: ['published', 'archived'] } })
+    .select('_id publishedAt')
+    .lean();
+  if (!challenges.length) return pointsByUserId;
+
+  const challengeIds = challenges.map((c) => c._id);
+
+  const [progresses, users] = await Promise.all([
+    DailyChallengeProgress.find({ userId: { $in: uniqueUserIds }, challengeId: { $in: challengeIds } })
+      .select('userId challengeId attemptsSubmitted bestScore')
+      .lean(),
+    User.find({ _id: { $in: uniqueUserIds } }).select('createdAt').lean(),
+  ]);
+
+  const createdAtByUserId = new Map(
+    users.map((u) => [String(u._id), u.createdAt ? new Date(u.createdAt) : null])
+  );
+
+  const progressByUser = new Map(); // userId -> Map(challengeId -> progress doc)
+  progresses.forEach((p) => {
+    const key = String(p.userId);
+    if (!progressByUser.has(key)) progressByUser.set(key, new Map());
+    progressByUser.get(key).set(String(p.challengeId), p);
+  });
+
+  uniqueUserIds.forEach((userId) => {
+    const joinedAt = createdAtByUserId.get(userId);
+    const userProgress = progressByUser.get(userId) || new Map();
+    let totalPoints = 0;
+    let challengesCompleted = 0;
+
+    challenges.forEach((c) => {
+      if (joinedAt && new Date(c.publishedAt) < joinedAt) return; // not eligible yet, skip
+
+      const progress = userProgress.get(String(c._id));
+      if (progress && (progress.attemptsSubmitted || 0) >= 1) {
+        totalPoints += progress.bestScore || 0;
+        challengesCompleted += 1;
+      } else {
+        totalPoints -= MISSED_DAY_PENALTY;
+      }
+    });
+
+    pointsByUserId.set(userId, { totalPoints, challengesCompleted });
+  });
+
+  return pointsByUserId;
+}
+
 module.exports = {
   CHALLENGE_DURATION_MS,
   MAX_ATTEMPTS,
@@ -341,5 +497,8 @@ module.exports = {
   createNotificationOnce,
   maybeCreateReminders,
   computeStreak,
+  getStreakHistory,
   computeStreaksForUsers,
+  computeLeaderboardPoints,
+  MISSED_DAY_PENALTY,
 };

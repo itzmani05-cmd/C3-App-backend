@@ -19,6 +19,8 @@ const attemptSchema = new mongoose.Schema({
     {
       questionId: mongoose.Schema.Types.ObjectId,
       selectedOptionIndex: Number,
+      selectedOptionIndexes: [Number],
+      selectedNumericalAnswer: String,
       isCorrect: Boolean,
       isMarkedForReview: Boolean
     }

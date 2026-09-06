@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const cache = require('memory-cache');
 const User = require('../models/User');
+require('../models/Exam'); // registers the 'Exam' model so User.populate('examIds') below can resolve it
 const Attempt = require('../models/Attempt');
 const Progress = require('../models/Progress');
 const Subtopic = require('../models/Subtopic');
@@ -146,6 +147,33 @@ exports.getProfile = async (req, res) => {
   } catch (err) {
     console.log(err);
     res.status(500).json({ message: 'Error fetching profile' });
+  }
+};
+
+exports.getMyExams = async (req, res) => {
+  try {
+    const userId = getRequestUserId(req);
+    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ message: 'Invalid user id' });
+    }
+
+    const user = await User.findById(userId)
+      .select('examIds')
+      .populate('examIds', 'name')
+      .lean();
+
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    const exams = (user.examIds || [])
+      .filter(Boolean)
+      .map((exam) => ({ _id: exam._id, name: exam.name }));
+
+    res.json({ exams });
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ message: 'Error fetching exams' });
   }
 };
 
