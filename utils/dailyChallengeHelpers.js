@@ -15,10 +15,22 @@ const User = require('../models/User');
 const { sendExpoPushNotifications } = require('./expoPush');
 
 const CHALLENGE_DURATION_MS = 3 * 24 * 60 * 60 * 1000; // 3 days
-const MAX_ATTEMPTS = 3;
+// Fallback only — the website admin sets the real limit per-challenge as challenge.maxAttempts.
+const DEFAULT_MAX_ATTEMPTS = 3;
+
+// The website's "Maximum Attempts" field, mirrored onto the same shared DailyChallenge document
+// this server reads. Falls back to DEFAULT_MAX_ATTEMPTS for older/draft docs missing the field.
+function getMaxAttempts(challenge) {
+  return typeof challenge.maxAttempts === 'number' && challenge.maxAttempts > 0
+    ? challenge.maxAttempts
+    : DEFAULT_MAX_ATTEMPTS;
+}
 const REQUIRED_QUESTION_COUNT = 5;
 const REMINDER_AFTER_MS = 24 * 60 * 60 * 1000; // 24 hours after publish
 const ENDING_SOON_WINDOW_MS = 12 * 60 * 60 * 1000; // last 12 hours before expiry
+// Window for the "just published" push. Must comfortably cover the reminder sweep's poll interval
+// (15 min, see server.js) so every newly-published challenge is caught by at least one sweep.
+const PUBLISH_NOTICE_WINDOW_MS = 20 * 60 * 1000;
 
 class AttemptLimitError extends Error {
   constructor() {
@@ -113,10 +125,11 @@ function getHardExpiryMs(challenge) {
 function computeRevealState(challenge, progress) {
   const now = Date.now();
   const hardExpiryMs = getHardExpiryMs(challenge);
+  const maxAttempts = getMaxAttempts(challenge);
   const attemptsSubmitted = progress?.attemptsSubmitted || 0;
 
   const expired = now >= hardExpiryMs;
-  const exhausted = attemptsSubmitted >= MAX_ATTEMPTS;
+  const exhausted = attemptsSubmitted >= maxAttempts;
   const revealed = expired || exhausted;
 
   let reason = null;
@@ -129,17 +142,17 @@ function computeRevealState(challenge, progress) {
     reason,
     expired,
     attemptsSubmitted,
-    attemptsRemaining: Math.max(0, MAX_ATTEMPTS - attemptsSubmitted),
+    attemptsRemaining: Math.max(0, maxAttempts - attemptsSubmitted),
   };
 }
 
-// Atomically claims the next attempt slot (1, 2, or 3) for a user on a challenge.
+// Atomically claims the next attempt slot (1..maxAttempts) for a user on a challenge.
 // Race-safe under concurrent submits: see plan doc for the retry rationale.
-async function consumeAttemptSlot(challengeId, userId) {
+async function consumeAttemptSlot(challengeId, userId, maxAttempts) {
   for (let i = 0; i < 2; i++) {
     try {
       const progress = await DailyChallengeProgress.findOneAndUpdate(
-        { challengeId, userId, attemptsSubmitted: { $lt: MAX_ATTEMPTS } },
+        { challengeId, userId, attemptsSubmitted: { $lt: maxAttempts } },
         { $inc: { attemptsSubmitted: 1 }, $set: { lastAttemptAt: new Date() } },
         { new: true, upsert: true }
       );
@@ -255,16 +268,28 @@ async function createNotificationOnce({ userId, type, title, message, dailyChall
   return true;
 }
 
-// Generates the 24h and ending-soon reminders for one student on one challenge — called both lazily
-// (as a side effect of the student checking in) and proactively (from the reminder sweep job, which
-// is what actually reaches students who haven't opened the app). Dedup is enforced by the unique
-// index on Notification, so calling this repeatedly for the same student+challenge is always safe.
+// Generates the "just published", 24h, and ending-soon notices for one student on one challenge —
+// called both lazily (as a side effect of the student checking in) and proactively (from the
+// reminder sweep job, which is what actually reaches students who haven't opened the app). Dedup is
+// enforced by the unique index on Notification, so calling this repeatedly for the same
+// student+challenge is always safe.
 async function maybeCreateReminders(challenge, userId, revealState, pushToken) {
   if (revealState.revealed) return; // nothing to remind about once completed/expired
 
   const now = Date.now();
   const publishedAtMs = new Date(challenge.publishedAt).getTime();
   const hardExpiryMs = getHardExpiryMs(challenge);
+
+  if (now - publishedAtMs <= PUBLISH_NOTICE_WINDOW_MS) {
+    await createNotificationOnce({
+      userId,
+      type: 'daily_challenge_published',
+      title: '🔔 New C3 Daily Challenge',
+      message: `Today's Daily Challenge is now available. ${REQUIRED_QUESTION_COUNT} questions, ${getMaxAttempts(challenge)} attempts.`,
+      dailyChallengeId: challenge._id,
+      pushToken,
+    });
+  }
 
   if (now - publishedAtMs >= REMINDER_AFTER_MS) {
     await createNotificationOnce({
@@ -481,7 +506,8 @@ async function computeLeaderboardPoints(userIds) {
 
 module.exports = {
   CHALLENGE_DURATION_MS,
-  MAX_ATTEMPTS,
+  DEFAULT_MAX_ATTEMPTS,
+  getMaxAttempts,
   REQUIRED_QUESTION_COUNT,
   REMINDER_AFTER_MS,
   ENDING_SOON_WINDOW_MS,

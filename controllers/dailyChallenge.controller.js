@@ -7,7 +7,7 @@ const Unit = require('../models/Unit');
 const Question = require('../models/Question');
 const User = require('../models/User');
 const {
-  MAX_ATTEMPTS,
+  getMaxAttempts,
   REQUIRED_QUESTION_COUNT,
   AttemptLimitError,
   stripForAttempt,
@@ -53,7 +53,7 @@ function buildChallengeView(challenge, progress, latestAttempt, currentStreak) {
     questionCount: challenge.questionSnapshot.length,
     publishedAt: challenge.publishedAt,
     expiresAt: challenge.expiresAt,
-    maxAttempts: MAX_ATTEMPTS,
+    maxAttempts: getMaxAttempts(challenge),
     attemptsSubmitted: revealState.attemptsSubmitted,
     attemptsRemaining: revealState.attemptsRemaining,
     bestScore: progress?.bestScore ?? null,
@@ -165,7 +165,7 @@ exports.startAttempt = async (req, res) => {
     }
 
     const progress = await DailyChallengeProgress.findOne({ challengeId, userId }).lean();
-    if ((progress?.attemptsSubmitted || 0) >= MAX_ATTEMPTS) {
+    if ((progress?.attemptsSubmitted || 0) >= getMaxAttempts(challenge)) {
       return res.status(403).json({ message: 'No attempts remaining' });
     }
 
@@ -248,15 +248,16 @@ exports.submitAttempt = async (req, res) => {
 
     attempt = claimed;
 
+    const maxAttempts = getMaxAttempts(challenge);
     let attemptNumber;
     try {
-      attemptNumber = await consumeAttemptSlot(challengeId, userId);
+      attemptNumber = await consumeAttemptSlot(challengeId, userId, maxAttempts);
     } catch (err) {
       if (err instanceof AttemptLimitError) {
         attempt.isVoid = true;
         attempt.voidReason = 'attempt_limit_exceeded';
         await attempt.save();
-        return res.status(403).json({ message: 'No attempts remaining (3/3 used)' });
+        return res.status(403).json({ message: `No attempts remaining (${maxAttempts}/${maxAttempts} used)` });
       }
       throw err;
     }
@@ -317,7 +318,7 @@ async function buildSubmitResponse(challenge, attempt, progress) {
     score: attempt.score,
     totalQuestions: attempt.totalQuestions,
     percentage: attempt.percentage,
-    maxAttempts: MAX_ATTEMPTS,
+    maxAttempts: getMaxAttempts(challenge),
     attemptsSubmitted: revealState.attemptsSubmitted,
     attemptsRemaining: revealState.attemptsRemaining,
     bestScore: progress?.bestScore ?? attempt.score,

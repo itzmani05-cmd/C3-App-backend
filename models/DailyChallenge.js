@@ -30,6 +30,10 @@ const dailyChallengeSchema = new mongoose.Schema({
   expiresAt: Date,
   earlyClosedAt: Date,
 
+  // Set by the website admin (C3Website/backend/models/DailyChallenge.js); read via
+  // dailyChallengeHelpers.getMaxAttempts, which falls back to DEFAULT_MAX_ATTEMPTS if absent.
+  maxAttempts: { type: Number, default: 3 },
+
   createdBy: mongoose.Schema.Types.ObjectId,
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now },
