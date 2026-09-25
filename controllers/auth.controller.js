@@ -55,7 +55,7 @@ exports.login=async(req,res)=>{
         }
 
         if(!isBcryptHash(user.password)){
-            // Migrate legacy plaintext password to a hash now that it's been verified.
+
             user.password=await hashPassword(password);
             await user.save();
         }

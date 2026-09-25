@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 const cache = require('memory-cache');
 const User = require('../models/User');
-require('../models/Exam'); // registers the 'Exam' model so User.populate('examIds') below can resolve it
+require('../models/Exam');
 const Attempt = require('../models/Attempt');
 const Progress = require('../models/Progress');
 const Subtopic = require('../models/Subtopic');
@@ -120,11 +120,31 @@ exports.savePushToken = async (req, res) => {
       return res.status(400).json({ message: 'A push token is required' });
     }
 
-    await User.findByIdAndUpdate(userId, { expoPushToken: token.trim() });
+    const cleanToken = token.trim();
+    await User.updateMany({ expoPushToken: cleanToken, _id: { $ne: userId } }, { $unset: { expoPushToken: 1 } });
+    await User.findByIdAndUpdate(userId, { expoPushToken: cleanToken });
     res.json({ message: 'Push token saved' });
   } catch (err) {
     console.log(err);
     res.status(500).json({ message: 'Error saving push token' });
+  }
+};
+
+exports.removePushToken = async (req, res) => {
+  try {
+    const userId = getRequestUserId(req);
+    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ message: 'Invalid user id' });
+    }
+
+    const token = typeof req.body?.token === 'string' ? req.body.token.trim() : '';
+
+    const filter = token ? { _id: userId, expoPushToken: token } : { _id: userId };
+    await User.updateOne(filter, { $unset: { expoPushToken: 1 } });
+    res.json({ message: 'Push token removed' });
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ message: 'Error removing push token' });
   }
 };
 
@@ -293,7 +313,7 @@ exports.getDashboard = async (req, res) => {
       },
       continueLearning,
       recentActivity,
-    }, 5 * 60 * 1000); 
+    }, 5 * 60 * 1000);
   } catch (err) {
     console.log(err);
     res.status(500).json({ message: 'Error fetching dashboard' });

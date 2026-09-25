@@ -1,35 +1,20 @@
-const {
-  getAnswerType,
-  getCorrectOptionIndex,
-  getCorrectOptionIndexes,
-  getNumericalAnswer,
-  getOptionText,
-  isNumericalAnswerCorrect,
-  normalizeQuestionOptions,
-  normalizeQuestionOptionImages,
-} = require('./questionFormat');
+const { isNumericalAnswerCorrect } = require('./questionFormat');
 const DailyChallengeProgress = require('../models/DailyChallengeProgress');
 const DailyChallenge = require('../models/DailyChallenge');
-const Notification = require('../models/Notification');
 const User = require('../models/User');
-const { sendExpoPushNotifications } = require('./expoPush');
+const { sendNotification } = require('../services/notification.service');
 
-const CHALLENGE_DURATION_MS = 3 * 24 * 60 * 60 * 1000; // 3 days
-// Fallback only — the website admin sets the real limit per-challenge as challenge.maxAttempts.
 const DEFAULT_MAX_ATTEMPTS = 3;
 
-// The website's "Maximum Attempts" field, mirrored onto the same shared DailyChallenge document
-// this server reads. Falls back to DEFAULT_MAX_ATTEMPTS for older/draft docs missing the field.
 function getMaxAttempts(challenge) {
   return typeof challenge.maxAttempts === 'number' && challenge.maxAttempts > 0
     ? challenge.maxAttempts
     : DEFAULT_MAX_ATTEMPTS;
 }
 const REQUIRED_QUESTION_COUNT = 5;
-const REMINDER_AFTER_MS = 24 * 60 * 60 * 1000; // 24 hours after publish
-const ENDING_SOON_WINDOW_MS = 12 * 60 * 60 * 1000; // last 12 hours before expiry
-// Window for the "just published" push. Must comfortably cover the reminder sweep's poll interval
-// (15 min, see server.js) so every newly-published challenge is caught by at least one sweep.
+const REMINDER_AFTER_MS = 24 * 60 * 60 * 1000;
+const ENDING_SOON_WINDOW_MS = 12 * 60 * 60 * 1000;
+
 const PUBLISH_NOTICE_WINDOW_MS = 20 * 60 * 1000;
 
 class AttemptLimitError extends Error {
@@ -38,45 +23,6 @@ class AttemptLimitError extends Error {
   }
 }
 
-function getUtcDateKey(date) {
-  return date.toISOString().slice(0, 10); // 'YYYY-MM-DD'
-}
-
-// Builds the frozen snapshot stored on the DailyChallenge document at publish time.
-// questionDocs: array of raw Question mongoose docs/objects, in ANY order.
-// orderedIds: array of question id strings in the admin-chosen display order.
-function buildQuestionSnapshot(questionDocs, orderedIds) {
-  const byId = new Map(questionDocs.map((q) => [String(q._id), q]));
-
-  return orderedIds.map((id, index) => {
-    const q = byId.get(String(id));
-    if (!q) return null;
-
-    const options = normalizeQuestionOptions(q.options);
-    const optionImages = normalizeQuestionOptionImages(q.optionImages, q.options);
-    const correctOptionIndex = getCorrectOptionIndex(q);
-    const answerType = getAnswerType(q);
-
-    return {
-      questionId: q._id,
-      order: index,
-      questionText: q.question || q.questionText || '',
-      questionImage: q.questionImage || '',
-      options: options.map((opt) => getOptionText(opt)),
-      optionImages,
-      answerType,
-      correctOptionIndex,
-      correctOptionIndexes: answerType === 'multiple' ? getCorrectOptionIndexes(q) : [],
-      numericalAnswer: answerType === 'numerical' ? getNumericalAnswer(q) : '',
-      explanation: q.explanation || '',
-      explanationImage: q.explanationImage || '',
-      topicId: q.topicId || null,
-      subtopicId: q.subtopicId || null,
-    };
-  });
-}
-
-// Question payload sent to a student BEFORE the answer is allowed to be revealed.
 function stripForAttempt(snapshotQuestion) {
   return {
     questionId: snapshotQuestion.questionId,
@@ -89,7 +35,8 @@ function stripForAttempt(snapshotQuestion) {
   };
 }
 
-// Question payload sent to a student AFTER reveal is allowed (3rd attempt or expiry).
+const LISTED_CHALLENGE_STATUSES = ['published', 'expired', 'archived'];
+
 function revealForAttempt(snapshotQuestion, response) {
   const selectedOptionIndex = typeof response === 'number' ? response : response?.selectedOptionIndex;
 
@@ -121,7 +68,6 @@ function getHardExpiryMs(challenge) {
   return Math.min(expiresAtMs, earlyClosedMs);
 }
 
-// Pure, derived-at-read-time reveal state. Never stored, so it can't go stale.
 function computeRevealState(challenge, progress) {
   const now = Date.now();
   const hardExpiryMs = getHardExpiryMs(challenge);
@@ -146,8 +92,6 @@ function computeRevealState(challenge, progress) {
   };
 }
 
-// Atomically claims the next attempt slot (1..maxAttempts) for a user on a challenge.
-// Race-safe under concurrent submits: see plan doc for the retry rationale.
 async function consumeAttemptSlot(challengeId, userId, maxAttempts) {
   for (let i = 0; i < 2; i++) {
     try {
@@ -166,7 +110,6 @@ async function consumeAttemptSlot(challengeId, userId, maxAttempts) {
   throw new AttemptLimitError();
 }
 
-// Re-scores against the frozen snapshot only. Never trusts client-sent isCorrect/score.
 function scoreAgainstSnapshot(questionSnapshot, submittedResponses) {
   const answerMap = new Map();
   (submittedResponses || []).forEach((r) => {
@@ -241,40 +184,21 @@ function scoreAgainstSnapshot(questionSnapshot, submittedResponses) {
   return { score, evaluated };
 }
 
-// Inserts a notification, silently ignoring a duplicate (userId+dailyChallengeId+type already exists).
-// This is the single dedup mechanism for both publish-notices and reminders — no separate "already sent" flag needed.
-// On first insert (not a dup), also fires an actual Expo push so the reminder reaches students who
-// haven't opened the app — pass `pushToken` when the caller already has it (e.g. the sweep job) to
-// avoid an extra User lookup per notification; otherwise it's looked up here.
 async function createNotificationOnce({ userId, type, title, message, dailyChallengeId, pushToken }) {
-  try {
-    await Notification.create({ userId, type, title, message, dailyChallengeId });
-  } catch (err) {
-    if (err.code === 11000) return false; // already sent, not an error
-    throw err;
-  }
-
-  let token = pushToken;
-  if (token === undefined) {
-    const user = await User.findById(userId).select('expoPushToken').lean();
-    token = user?.expoPushToken;
-  }
-  if (token) {
-    sendExpoPushNotifications([{ to: token, title, body: message, data: { type, dailyChallengeId: String(dailyChallengeId || '') } }]).catch(
-      (err) => console.error('[dailyChallengeHelpers] push send error:', err.message)
-    );
-  }
-
-  return true;
+  const result = await sendNotification({
+    userId,
+    type,
+    title,
+    body: message,
+    dailyChallengeId,
+    data: { dailyChallengeId },
+    pushToken,
+  });
+  return result.created;
 }
 
-// Generates the "just published", 24h, and ending-soon notices for one student on one challenge —
-// called both lazily (as a side effect of the student checking in) and proactively (from the
-// reminder sweep job, which is what actually reaches students who haven't opened the app). Dedup is
-// enforced by the unique index on Notification, so calling this repeatedly for the same
-// student+challenge is always safe.
 async function maybeCreateReminders(challenge, userId, revealState, pushToken) {
-  if (revealState.revealed) return; // nothing to remind about once completed/expired
+  if (revealState.revealed) return;
 
   const now = Date.now();
   const publishedAtMs = new Date(challenge.publishedAt).getTime();
@@ -314,17 +238,48 @@ async function maybeCreateReminders(challenge, userId, revealState, pushToken) {
   }
 }
 
-// Streak is defined over the sequence of published/archived challenges a student could have completed
-// (ordered by publish date), not raw calendar days — so a day with no challenge published never breaks
-// a streak, only actually missing a published challenge does.
+function isStillOpen(challenge, now = Date.now()) {
+  if (challenge.status !== 'published' || challenge.earlyClosedAt) return false;
+  return !challenge.expiresAt || new Date(challenge.expiresAt).getTime() > now;
+}
+
+function foldStreaks(challenges, completedSet) {
+  const now = Date.now();
+
+  let currentStreak = 0;
+  for (let i = 0; i < challenges.length; i++) {
+    const c = challenges[i];
+    if (completedSet.has(String(c._id))) currentStreak += 1;
+    else if (i === 0 && isStillOpen(c, now)) continue;
+    else break;
+  }
+
+  let longestStreak = 0;
+  let running = 0;
+  let overallStreak = 0;
+  for (let i = challenges.length - 1; i >= 0; i--) {
+    if (completedSet.has(String(challenges[i]._id))) {
+      running += 1;
+      overallStreak += 1;
+      longestStreak = Math.max(longestStreak, running);
+    } else {
+      running = 0;
+    }
+  }
+
+  return { currentStreak, longestStreak, overallStreak };
+}
+
+const EMPTY_STREAKS = { currentStreak: 0, longestStreak: 0, overallStreak: 0 };
+
 async function computeStreak(userId) {
-  const challenges = await DailyChallenge.find({ status: { $in: ['published', 'archived'] } })
-    .select('_id publishedAt')
+  const challenges = await DailyChallenge.find({ status: { $in: LISTED_CHALLENGE_STATUSES } })
+    .select('_id publishedAt status expiresAt earlyClosedAt')
     .sort({ publishedAt: -1 })
     .lean();
 
   if (!challenges.length) {
-    return { currentStreak: 0, longestStreak: 0 };
+    return { ...EMPTY_STREAKS };
   }
 
   const challengeIds = challenges.map((c) => c._id);
@@ -337,32 +292,11 @@ async function computeStreak(userId) {
     .lean();
   const completedSet = new Set(completedProgress.map((p) => String(p.challengeId)));
 
-  let currentStreak = 0;
-  for (const c of challenges) {
-    if (completedSet.has(String(c._id))) currentStreak += 1;
-    else break;
-  }
-
-  let longestStreak = 0;
-  let running = 0;
-  for (let i = challenges.length - 1; i >= 0; i--) {
-    if (completedSet.has(String(challenges[i]._id))) {
-      running += 1;
-      longestStreak = Math.max(longestStreak, running);
-    } else {
-      running = 0;
-    }
-  }
-
-  return { currentStreak, longestStreak };
+  return foldStreaks(challenges, completedSet);
 }
 
-// Per-day completion timeline for a streak graph — the last `limit` published/archived challenges,
-// oldest first (left-to-right), each flagged with whether this student completed it. Reuses the
-// same completedSet logic as computeStreak, just over a bounded, ordered window instead of folding
-// it into a single streak count.
 async function getStreakHistory(userId, limit = 14) {
-  const challenges = await DailyChallenge.find({ status: { $in: ['published', 'archived'] } })
+  const challenges = await DailyChallenge.find({ status: { $in: LISTED_CHALLENGE_STATUSES } })
     .select('_id dateKey publishedAt')
     .sort({ publishedAt: -1 })
     .limit(limit)
@@ -388,14 +322,12 @@ async function getStreakHistory(userId, limit = 14) {
     .reverse();
 }
 
-// Batch version of computeStreak for a leaderboard: one query for the challenge timeline and one
-// query for every relevant progress row, instead of computeStreak's two queries per user.
 async function computeStreaksForUsers(userIds) {
   const uniqueUserIds = [...new Set(userIds.map((id) => String(id)))];
-  const streakByUserId = new Map(uniqueUserIds.map((id) => [id, { currentStreak: 0, longestStreak: 0 }]));
+  const streakByUserId = new Map(uniqueUserIds.map((id) => [id, { ...EMPTY_STREAKS }]));
 
-  const challenges = await DailyChallenge.find({ status: { $in: ['published', 'archived'] } })
-    .select('_id publishedAt')
+  const challenges = await DailyChallenge.find({ status: { $in: LISTED_CHALLENGE_STATUSES } })
+    .select('_id publishedAt status expiresAt earlyClosedAt')
     .sort({ publishedAt: -1 })
     .lean();
   if (!challenges.length) return streakByUserId;
@@ -409,7 +341,7 @@ async function computeStreaksForUsers(userIds) {
     .select('userId challengeId')
     .lean();
 
-  const completedByUser = new Map(); // userId -> Set(challengeId)
+  const completedByUser = new Map();
   completedProgress.forEach((p) => {
     const key = String(p.userId);
     if (!completedByUser.has(key)) completedByUser.set(key, new Set());
@@ -418,44 +350,19 @@ async function computeStreaksForUsers(userIds) {
 
   uniqueUserIds.forEach((userId) => {
     const completedSet = completedByUser.get(userId) || new Set();
-
-    let currentStreak = 0;
-    for (const c of challenges) {
-      if (completedSet.has(String(c._id))) currentStreak += 1;
-      else break;
-    }
-
-    let longestStreak = 0;
-    let running = 0;
-    for (let i = challenges.length - 1; i >= 0; i--) {
-      if (completedSet.has(String(challenges[i]._id))) {
-        running += 1;
-        longestStreak = Math.max(longestStreak, running);
-      } else {
-        running = 0;
-      }
-    }
-
-    streakByUserId.set(userId, { currentStreak, longestStreak });
+    streakByUserId.set(userId, foldStreaks(challenges, completedSet));
   });
 
   return streakByUserId;
 }
 
-// A missed day should actively cost points, not just fail to add any — otherwise ignoring the
-// Daily Challenge is free. Attempted challenges add their best score (0-5); every published/
-// archived challenge a student never attempted subtracts this many points instead of contributing 0.
 const MISSED_DAY_PENALTY = 10;
 
-// Leaderboard points for a batch of users: sum of bestScore over attempted challenges, minus
-// MISSED_DAY_PENALTY for each challenge left unattempted — but only for challenges published on
-// or after the student's own account was created, so nobody is penalized for challenges that ran
-// before they even had the app.
 async function computeLeaderboardPoints(userIds) {
   const uniqueUserIds = [...new Set(userIds.map((id) => String(id)))];
   const pointsByUserId = new Map(uniqueUserIds.map((id) => [id, { totalPoints: 0, challengesCompleted: 0 }]));
 
-  const challenges = await DailyChallenge.find({ status: { $in: ['published', 'archived'] } })
+  const challenges = await DailyChallenge.find({ status: { $in: LISTED_CHALLENGE_STATUSES } })
     .select('_id publishedAt')
     .lean();
   if (!challenges.length) return pointsByUserId;
@@ -473,7 +380,7 @@ async function computeLeaderboardPoints(userIds) {
     users.map((u) => [String(u._id), u.createdAt ? new Date(u.createdAt) : null])
   );
 
-  const progressByUser = new Map(); // userId -> Map(challengeId -> progress doc)
+  const progressByUser = new Map();
   progresses.forEach((p) => {
     const key = String(p.userId);
     if (!progressByUser.has(key)) progressByUser.set(key, new Map());
@@ -487,7 +394,7 @@ async function computeLeaderboardPoints(userIds) {
     let challengesCompleted = 0;
 
     challenges.forEach((c) => {
-      if (joinedAt && new Date(c.publishedAt) < joinedAt) return; // not eligible yet, skip
+      if (joinedAt && new Date(c.publishedAt) < joinedAt) return;
 
       const progress = userProgress.get(String(c._id));
       if (progress && (progress.attemptsSubmitted || 0) >= 1) {
@@ -505,26 +412,19 @@ async function computeLeaderboardPoints(userIds) {
 }
 
 module.exports = {
-  CHALLENGE_DURATION_MS,
-  DEFAULT_MAX_ATTEMPTS,
+  LISTED_CHALLENGE_STATUSES,
   getMaxAttempts,
   REQUIRED_QUESTION_COUNT,
-  REMINDER_AFTER_MS,
-  ENDING_SOON_WINDOW_MS,
   AttemptLimitError,
-  getUtcDateKey,
-  buildQuestionSnapshot,
   stripForAttempt,
   revealForAttempt,
   getHardExpiryMs,
   computeRevealState,
   consumeAttemptSlot,
   scoreAgainstSnapshot,
-  createNotificationOnce,
   maybeCreateReminders,
   computeStreak,
   getStreakHistory,
   computeStreaksForUsers,
   computeLeaderboardPoints,
-  MISSED_DAY_PENALTY,
 };

@@ -13,6 +13,7 @@ const progressRoutes=require('./routes/progress.routes');
 const dailyChallengeRoutes=require('./routes/dailyChallenge.routes');
 const notificationRoutes=require('./routes/notification.routes');
 const { runDailyChallengeReminderSweep } = require('./jobs/dailyChallengeReminderJob');
+const { runPushOutboxSweep, runPushReceiptSweep } = require('./services/notification.service');
 
 const app=express();
 connectDB();
@@ -21,17 +22,15 @@ app.use(cors());
 app.use(express.json());
 
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5000, // limit each IP to 100 requests per windowMs
+  windowMs: 15 * 60 * 1000,
+  max: 5000,
   message: 'Too many requests from this IP, please try again later.',
-  standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
-  legacyHeaders: false, // Disable the `X-RateLimit-*` headers
+  standardHeaders: true,
+  legacyHeaders: false,
 });
 app.use(limiter);
 
-// Startup connectivity ping the client fires on launch (App.js pingApi()) — was previously
-// unimplemented, so every app launch logged a 404 for no functional reason.
-app.get('/api/test', (req, res) => {
+app.get('/api/test', (_req, res) => {
   res.json({ status: 'ok' });
 });
 
@@ -43,11 +42,11 @@ app.use('/api/user',userRoutes);
 app.use('/api/daily-challenge',dailyChallengeRoutes);
 app.use('/api/notifications',notificationRoutes);
 
-const REMINDER_SWEEP_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
+const REMINDER_SWEEP_INTERVAL_MS = 15 * 60 * 1000;
 let reminderSweepRunning = false;
 
 function scheduleDailyChallengeReminderSweep() {
-  if (reminderSweepRunning) return; // guard against overlapping runs if a sweep is still in flight
+  if (reminderSweepRunning) return;
   reminderSweepRunning = true;
   runDailyChallengeReminderSweep()
     .catch((err) => console.error('[dailyChallengeReminderJob] sweep error:', err.message))
@@ -58,6 +57,24 @@ function scheduleDailyChallengeReminderSweep() {
 
 setInterval(scheduleDailyChallengeReminderSweep, REMINDER_SWEEP_INTERVAL_MS);
 scheduleDailyChallengeReminderSweep();
+
+function runExclusive(name, intervalMs, task) {
+  let running = false;
+  const tick = () => {
+    if (running) return;
+    running = true;
+    task()
+      .catch((err) => console.error(`[${name}] sweep error:`, err.message))
+      .finally(() => {
+        running = false;
+      });
+  };
+  setInterval(tick, intervalMs);
+  tick();
+}
+
+runExclusive('pushOutbox', 60 * 1000, runPushOutboxSweep);
+runExclusive('pushReceipts', 15 * 60 * 1000, runPushReceiptSweep);
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, "0.0.0.0", () => {

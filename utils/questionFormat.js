@@ -258,9 +258,6 @@ module.exports = {
   getCorrectOptionIndex,
   getCorrectOptionIndexes,
   getNumericalAnswer,
-  getOptionText,
   isNumericalAnswerCorrect,
   normalizeQuestion,
-  normalizeQuestionOptionImages,
-  normalizeQuestionOptions,
 };

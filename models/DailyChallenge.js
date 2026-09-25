@@ -20,7 +20,7 @@ const questionSnapshotSchema = new mongoose.Schema({
 const dailyChallengeSchema = new mongoose.Schema({
   title: String,
   examId: mongoose.Schema.Types.ObjectId,
-  status: { type: String, enum: ['draft', 'published', 'archived'], default: 'draft' },
+  status: { type: String, enum: ['draft', 'scheduled', 'published', 'expired', 'archived'], default: 'draft' },
 
   questionIds: [mongoose.Schema.Types.ObjectId],
   questionSnapshot: [questionSnapshotSchema],
@@ -30,8 +30,6 @@ const dailyChallengeSchema = new mongoose.Schema({
   expiresAt: Date,
   earlyClosedAt: Date,
 
-  // Set by the website admin (C3Website/backend/models/DailyChallenge.js); read via
-  // dailyChallengeHelpers.getMaxAttempts, which falls back to DEFAULT_MAX_ATTEMPTS if absent.
   maxAttempts: { type: Number, default: 3 },
 
   createdBy: mongoose.Schema.Types.ObjectId,

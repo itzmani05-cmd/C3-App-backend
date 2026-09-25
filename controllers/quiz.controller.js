@@ -40,7 +40,6 @@ exports.getQuiz = async (req, res) => {
         return res.status(403).json({ message: "Unauthorized session" });
       }
 
-      // ❗ FIX: Safe handling
       if (!Array.isArray(session.questionOrder)) {
         await Attempt.deleteOne({ _id: session._id });
         return res.status(400).json({
@@ -74,7 +73,6 @@ exports.getQuiz = async (req, res) => {
     }).lean();
 
     if (existingSession) {
-      // ❗ FIX: Remove corrupted sessions
       if (!Array.isArray(existingSession.questionOrder)) {
         await Attempt.deleteOne({ _id: existingSession._id });
       } else {
@@ -91,7 +89,6 @@ exports.getQuiz = async (req, res) => {
           .map(id => questionMap[id.toString()])
           .filter(Boolean);
 
-        // Reset startedAt on resume
         await Attempt.findByIdAndUpdate(existingSession._id, { startedAt: new Date() });
 
         return res.json({
@@ -101,9 +98,6 @@ exports.getQuiz = async (req, res) => {
       }
     }
 
-    // =========================
-    // 🔒 CHECK LESSON UNLOCK
-    // =========================
     const learningPath = await getLearningPathForUser(userId);
     const lessonKey = getLessonKey({ topicId });
     const currentLesson = learningPath?.lessons?.find(l => l.key === lessonKey);
@@ -112,25 +106,18 @@ exports.getQuiz = async (req, res) => {
       return res.status(403).json({ message: "Lesson is locked" });
     }
 
-    // =========================
-    // 📥 FETCH QUESTIONS
-    // =========================
     const questions = await Question.find({
       topicId: new mongoose.Types.ObjectId(topicId)
     })
       .limit(50)
       .lean();
 
-    // ❗ FIX: No questions check
     if (!questions || questions.length === 0) {
       return res.status(404).json({
         message: "No questions available for this topic"
       });
     }
 
-    // =========================
-    // 🔀 SHUFFLE + CREATE SESSION
-    // =========================
     const shuffled = shuffleArray(questions).slice(0, 25);
 
     console.log("[GET QUIZ] Creating session object...");
@@ -232,7 +219,6 @@ exports.getQuizBySubtopic = async (req, res) => {
                     questionMap[id.toString()]
                 ).filter(Boolean);
 
-                // Reset startedAt on resume
                 await Attempt.findByIdAndUpdate(existingSession._id, { startedAt: new Date() });
 
                 return res.json({
@@ -296,7 +282,6 @@ exports.submitQuiz = async (req, res) => {
     isTimedOut = false
   } = req.body;
 
-  // Sanitize IDs
   if (subtopicId === "undefined" || subtopicId === "null" || !subtopicId) subtopicId = null;
   if (topicId === "undefined" || topicId === "null" || !topicId) topicId = null;
 
@@ -326,7 +311,7 @@ exports.submitQuiz = async (req, res) => {
       return res.status(400).json({ message: "Quiz already submitted" });
     }
 
-    const QUIZ_DURATION = 3600 * 24; // 24 hours
+    const QUIZ_DURATION = 3600 * 24;
     const elapsed =
       (Date.now() - new Date(session.startedAt).getTime()) / 1000;
 
@@ -382,8 +367,7 @@ exports.submitQuiz = async (req, res) => {
 
     for (const qId of order) {
       let rawQuestion = questionMap[qId.toString()];
-      
-      // FALLBACK: Try finding by value if it's an ObjectId object
+
       if (!rawQuestion && typeof qId === 'object') {
           rawQuestion = questions.find(q => q._id.toString() === qId.toString());
       }
@@ -469,10 +453,6 @@ exports.submitQuiz = async (req, res) => {
       : 0;
     const passed = percentage >= 80;
 
-    // Count previously submitted attempts on this exact quiz session's quizId (current attempt not
-    // yet saved), so >= 2 previous + 1 current = 3 total attempts. Computed once here (rather than
-    // only inside the topicId/subtopicId branch below) so it's also available to gate the answer
-    // review further down, regardless of whether progress tracking applies to this quiz.
     const userObjectId = mongoose.Types.ObjectId.isValid(userId)
       ? new mongoose.Types.ObjectId(userId)
       : userId;
@@ -502,13 +482,9 @@ exports.submitQuiz = async (req, res) => {
         });
       }
 
-      // ========================================
-      // 🔓 AUTO-UNLOCK AFTER 3 ATTEMPTS (regardless of score)
-      // ========================================
       if (attemptCount >= 2) {
         console.log("[SUBMIT] 3rd+ attempt reached (2 previous + current). Auto-unlocking next lesson.");
 
-        // Mark current lesson as cleared so learning path recognizes it
         await Progress.findOneAndUpdate(
           subtopicId
             ? { userId, subtopicId }
@@ -550,8 +526,6 @@ exports.submitQuiz = async (req, res) => {
     session.score = correct;
     session.totalQuestions = totalQuestions;
     session.percentage = percentage;
-    // Answer review unlocks on passing OR once the student has used all their attempts — otherwise a
-    // student who never passes could never see the correct answers/explanations.
     session.isExplanationUnlocked = passed || attemptsExhausted;
     session.isPassed = passed;
     session.isSubmitted = true;
@@ -572,7 +546,7 @@ exports.submitQuiz = async (req, res) => {
         console.error("[SUBMIT] Error saving session:", saveErr);
         return res.status(500).json({ message: "Error saving quiz results: " + saveErr.message });
     }
-    
+
     res.json({
       score: correct,
       percentage,

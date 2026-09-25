@@ -14,7 +14,7 @@ async function verifyPassword(plainPassword, storedPassword) {
     if (isBcryptHash(storedPassword)) {
         return bcrypt.compare(plainPassword, storedPassword);
     }
-    // Legacy plaintext password from before hashing was added.
+
     return plainPassword === storedPassword;
 }
 
