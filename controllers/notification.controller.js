@@ -13,6 +13,7 @@ exports.list = async (req, res) => {
     }
 
     const notifications = await Notification.find({ userId })
+      .select('-push -dedupeKey')
       .sort({ createdAt: -1 })
       .limit(100)
       .lean();

@@ -1,7 +1,3 @@
-// Proactively reminds students about the live Daily Challenge, so the reminder reaches them even if
-// they never open the app — the per-request reminder path in dailyChallenge.controller.js only fires
-// for students who happen to check in. Run on an interval from server.js; safe to run repeatedly
-// since Notification's unique index dedupes both this sweep and the lazy path against each other.
 const DailyChallenge = require('../models/DailyChallenge');
 const DailyChallengeProgress = require('../models/DailyChallengeProgress');
 const User = require('../models/User');
@@ -12,11 +8,12 @@ async function runDailyChallengeReminderSweep() {
   if (!challenge) return;
 
   const revealStateBase = computeRevealState(challenge, null);
-  if (revealStateBase.expired) return; // nothing left to remind about
+  if (revealStateBase.expired) return;
 
   const students = await User.find({
-    role: 'student',
+    role: { $in: ['student', 'Student'] },
     isActive: { $ne: false },
+    status: { $nin: ['inactive', 'blocked'] },
     expoPushToken: { $exists: true, $ne: null, $nin: ['', null] },
   })
     .select('_id expoPushToken')

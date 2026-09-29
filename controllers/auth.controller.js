@@ -1,9 +1,10 @@
 const User=require('../models/User');
 const { hashPassword, verifyPassword, isBcryptHash } = require('../utils/password');
+const { signUserToken } = require('../utils/token');
 
 exports.changePassword=async(req,res)=>{
     try{
-        const userId=req.headers?.userid;
+        const userId=req.userId;
         const {oldPassword,newPassword}=req.body;
 
         if(!userId){
@@ -55,7 +56,7 @@ exports.login=async(req,res)=>{
         }
 
         if(!isBcryptHash(user.password)){
-            // Migrate legacy plaintext password to a hash now that it's been verified.
+
             user.password=await hashPassword(password);
             await user.save();
         }
@@ -64,7 +65,12 @@ exports.login=async(req,res)=>{
             return res.status(403).json({message:"This account is inactive"});
         }
 
+        if(user.status && user.status!=='active'){
+            return res.status(403).json({message:`Your account is ${user.status}. Please contact the administrator.`});
+        }
+
         res.json({
+            token:signUserToken(user._id),
             userId:user._id,
             name:user.name || "",
             email:user.email,

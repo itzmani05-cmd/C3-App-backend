@@ -69,7 +69,7 @@ exports.getSubtopics = async (req, res) => {
 
 exports.getLearningPath = async (req, res) => {
   try {
-    const userId = req.headers.userid || req.query.userId;
+    const userId = req.userId;
     const learningPath = await getLearningPathForUser(userId, { examId: req.query.examId });
 
     res.json({
@@ -85,7 +85,7 @@ exports.getLearningPath = async (req, res) => {
 exports.getNextLesson = async (req, res) => {
   try {
     const { topicId, subtopicId } = req.query;
-    const userId = req.headers.userid || req.query.userId;
+    const userId = req.userId;
 
     if (!topicId && !subtopicId) {
       return res.status(400).json({ message: 'Current lesson is required' });

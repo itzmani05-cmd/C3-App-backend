@@ -18,6 +18,7 @@ const {
   scoreAgainstSnapshot,
   maybeCreateReminders,
   computeStreak,
+  LISTED_CHALLENGE_STATUSES,
   getStreakHistory,
   computeStreaksForUsers,
   computeLeaderboardPoints,
@@ -29,8 +30,7 @@ function getRequestUserId(req) {
   return req.userId || req.headers.userid;
 }
 
-// Builds the question payload + attempt info returned to the student, honoring reveal state.
-function buildChallengeView(challenge, progress, latestAttempt, currentStreak) {
+function buildChallengeView(challenge, progress, latestAttempt, streaks = {}) {
   const revealState = computeRevealState(challenge, progress);
 
   const responseByQuestionId = new Map();
@@ -58,7 +58,8 @@ function buildChallengeView(challenge, progress, latestAttempt, currentStreak) {
     attemptsRemaining: revealState.attemptsRemaining,
     bestScore: progress?.bestScore ?? null,
     bestPercentage: progress?.bestPercentage ?? null,
-    currentStreak: currentStreak ?? 0,
+    currentStreak: streaks.currentStreak ?? 0,
+    overallStreak: streaks.overallStreak ?? 0,
     revealed: revealState.revealed,
     revealReason: revealState.reason,
     questions,
@@ -84,9 +85,6 @@ exports.getToday = async (req, res) => {
       return res.json({ challenge: null });
     }
 
-    // Defensive: a challenge published without a questionSnapshot (e.g. from a publish path that
-    // predates snapshot-building, or bad data) can't be rendered — surface it as "no challenge" to
-    // the student rather than crashing the whole endpoint.
     if (!Array.isArray(challenge.questionSnapshot) || challenge.questionSnapshot.length === 0) {
       console.error('DAILY CHALLENGE MISSING SNAPSHOT:', challenge._id);
       return res.json({ challenge: null });
@@ -110,16 +108,14 @@ exports.getToday = async (req, res) => {
         .lean();
     }
 
-    const { currentStreak } = await computeStreak(userId);
+    const streaks = await computeStreak(userId);
 
-    // Reminder generation also happens lazily here (as a side effect of the student checking in),
-    // in addition to the proactive sweep job — both are dedup-guarded, so this is always safe.
     const requester = await User.findById(userId).select('expoPushToken').lean();
     maybeCreateReminders(challenge, userId, revealState, requester?.expoPushToken).catch((err) =>
       console.error('Reminder creation error:', err)
     );
 
-    res.json({ challenge: buildChallengeView(challenge, progress, latestAttempt, currentStreak) });
+    res.json({ challenge: buildChallengeView(challenge, progress, latestAttempt, streaks) });
   } catch (err) {
     console.error('GET TODAY DAILY CHALLENGE ERROR:', err);
     res.status(500).json({ message: 'Error fetching daily challenge' });
@@ -169,11 +165,6 @@ exports.startAttempt = async (req, res) => {
       return res.status(403).json({ message: 'No attempts remaining' });
     }
 
-    // The shared `dailychallengeattempts` collection also enforces the website backend's unique
-    // index on {challengeId, studentEmail, attemptNumber} — omitting studentEmail here would leave
-    // it null on every attempt, so a second student's attempt on the same challenge would collide
-    // with the first student's on that index (independent of userId, which the website's index
-    // doesn't know about).
     const user = await User.findById(userId).select('email').lean();
 
     const attempt = new DailyChallengeAttempt({
@@ -222,7 +213,7 @@ exports.submitAttempt = async (req, res) => {
     }
 
     if (attempt.isSubmitted) {
-      // Idempotent replay of an already-completed submission.
+
       const progress = await DailyChallengeProgress.findOne({ challengeId, userId }).lean();
       return res.json(await buildSubmitResponse(challenge, attempt, progress));
     }
@@ -232,7 +223,6 @@ exports.submitAttempt = async (req, res) => {
       return res.status(410).json({ message: 'This challenge has expired and can no longer be submitted' });
     }
 
-    // Atomically claim this specific attempt so a duplicate/concurrent submit can't consume two slots.
     const claimed = await DailyChallengeAttempt.findOneAndUpdate(
       { _id: attempt._id, userId, isSubmitted: false },
       { $set: { isSubmitted: true, submittedAt: new Date() } },
@@ -240,7 +230,7 @@ exports.submitAttempt = async (req, res) => {
     );
 
     if (!claimed) {
-      // Lost the race to a concurrent identical request — replay its result.
+
       const finalAttempt = await DailyChallengeAttempt.findById(attempt._id).lean();
       const progress = await DailyChallengeProgress.findOne({ challengeId, userId }).lean();
       return res.json(await buildSubmitResponse(challenge, finalAttempt, progress));
@@ -288,7 +278,7 @@ exports.submitAttempt = async (req, res) => {
 
 async function buildSubmitResponse(challenge, attempt, progress) {
   const revealState = computeRevealState(challenge, progress);
-  const { currentStreak } = await computeStreak(attempt.userId);
+  const { currentStreak, overallStreak } = await computeStreak(attempt.userId);
 
   const responseByQuestionId = new Map();
   (attempt.responses || []).forEach((r) => {
@@ -325,6 +315,7 @@ async function buildSubmitResponse(challenge, attempt, progress) {
     revealed: revealState.revealed,
     revealReason: revealState.reason,
     currentStreak,
+    overallStreak,
     questions,
   };
 }
@@ -368,7 +359,7 @@ exports.getHistory = async (req, res) => {
     const userId = getRequestUserId(req);
     if (!userId) return res.status(401).json({ message: 'User not authenticated' });
 
-    const challenges = await DailyChallenge.find({ status: { $in: ['published', 'archived'] } })
+    const challenges = await DailyChallenge.find({ status: { $in: LISTED_CHALLENGE_STATUSES } })
       .sort({ publishedAt: -1 })
       .limit(60)
       .lean();
@@ -439,7 +430,7 @@ exports.getProgressSummary = async (req, res) => {
     const averageScore = challengesCompleted ? correctAnswers / challengesCompleted : 0;
     const bestScore = completed.length ? Math.max(...completed.map((p) => p.bestScore || 0)) : 0;
 
-    const { currentStreak, longestStreak } = await computeStreak(userId);
+    const { currentStreak, longestStreak, overallStreak } = await computeStreak(userId);
 
     res.json({
       challengesCompleted,
@@ -451,6 +442,7 @@ exports.getProgressSummary = async (req, res) => {
       questionsPerChallenge: REQUIRED_QUESTION_COUNT,
       currentStreak,
       longestStreak,
+      overallStreak,
     });
   } catch (err) {
     console.error('GET DAILY CHALLENGE PROGRESS SUMMARY ERROR:', err);
@@ -491,7 +483,6 @@ exports.getTopicPerformance = async (req, res) => {
       return res.json({ topics: [], weakArea: null });
     }
 
-    // Keep only each challenge's most recent attempt so retries don't skew topic accuracy.
     const latestAttemptByChallenge = new Map();
     submittedAttempts.forEach((a) => {
       const key = String(a.challengeId);
@@ -512,7 +503,7 @@ exports.getTopicPerformance = async (req, res) => {
       ])
     );
 
-    const topicStats = new Map(); // topicId -> { correct, total }
+    const topicStats = new Map();
     latestAttemptByChallenge.forEach((attempt, challengeKey) => {
       const snapshotMap = snapshotByChallengeId.get(challengeKey);
       if (!snapshotMap) return;
@@ -556,20 +547,14 @@ exports.getTopicPerformance = async (req, res) => {
   }
 };
 
-// How many of the most recent challenges the unit archive endpoints look back through — same
-// window as getHistory, so this can't grow unbounded for a long-tenured user.
-const UNIT_ARCHIVE_CHALLENGE_LOOKBACK = 60;
-
-// Shared basis for the unit-scoped archive endpoints below: for a user, each challenge (within the
-// last UNIT_ARCHIVE_CHALLENGE_LOOKBACK published/archived challenges) they've submitted at least one
-// attempt for that has since revealed (per computeRevealState), paired with their latest attempt on
-// it. Sorted newest challenge first.
 async function getRevealedChallengesForUser(userId) {
-  const challenges = await DailyChallenge.find({ status: { $in: ['published', 'archived'] } })
-    .sort({ publishedAt: -1 })
-    .limit(UNIT_ARCHIVE_CHALLENGE_LOOKBACK)
-    .lean();
+  const user = await User.findById(userId).select('examIds').lean();
+  const examIds = user?.examIds || [];
 
+  const challengeFilter = { status: { $in: LISTED_CHALLENGE_STATUSES } };
+  if (examIds.length) challengeFilter.examId = { $in: examIds };
+
+  const challenges = await DailyChallenge.find(challengeFilter).sort({ publishedAt: -1 }).lean();
   if (!challenges.length) return [];
 
   const challengeIds = challenges.map((c) => c._id);
@@ -586,9 +571,6 @@ async function getRevealedChallengesForUser(userId) {
     DailyChallengeProgress.find({ userId, challengeId: { $in: challengeIds } }).lean(),
   ]);
 
-  if (!submittedAttempts.length) return [];
-
-  // Keep only each challenge's most recent attempt, same idiom as getTopicPerformance.
   const latestAttemptByChallenge = new Map();
   submittedAttempts.forEach((a) => {
     const key = String(a.challengeId);
@@ -601,27 +583,20 @@ async function getRevealedChallengesForUser(userId) {
 
   const revealed = [];
   challenges.forEach((challenge) => {
-    const attempt = latestAttemptByChallenge.get(String(challenge._id));
-    if (!attempt) return; // user never submitted this one
 
-    // Defensive: same guard as getToday — a challenge with no usable snapshot can't be rendered.
     if (!Array.isArray(challenge.questionSnapshot) || challenge.questionSnapshot.length === 0) return;
 
     const progress = progressByChallenge.get(String(challenge._id)) || null;
     const revealState = computeRevealState(challenge, progress);
-    if (!revealState.revealed) return; // gating rule: only revealed (3 attempts used or expired) challenges surface here
+    if (!revealState.revealed) return;
 
+    const attempt = latestAttemptByChallenge.get(String(challenge._id)) || null;
     revealed.push({ challenge, attempt });
   });
 
-  // Already newest-first: `challenges` was fetched sorted by publishedAt desc and iterated in order.
   return revealed;
 }
 
-// Lists units (scoped to examId when provided, same set Practice's content.controller.getUnits
-// shows) decorated with whether each has topics and how many of the student's revealed
-// daily-challenge questions belong to it — the two facts the Daily Challenge tab needs to decide
-// what a unit tap should open.
 exports.getUnitsWithProgress = async (req, res) => {
   try {
     const userId = getRequestUserId(req);
@@ -650,8 +625,6 @@ exports.getUnitsWithProgress = async (req, res) => {
       challenge.questionSnapshot.forEach((q) => poolQuestionIds.push(q.questionId));
     });
 
-    // Attribute each snapshot question to a unit via the live Question doc — the snapshot itself
-    // only carries topicId/subtopicId, never unitId, and a question can have a unit with no topic.
     const questionDocs = poolQuestionIds.length
       ? await Question.find({ _id: { $in: poolQuestionIds } }).select('unitId').lean()
       : [];
@@ -663,7 +636,7 @@ exports.getUnitsWithProgress = async (req, res) => {
     revealedChallenges.forEach(({ challenge }) => {
       challenge.questionSnapshot.forEach((q) => {
         const unitId = unitIdByQuestionId.get(String(q.questionId));
-        if (!unitId) return; // Question deleted since, or never had a unit — can't attribute, so drop it
+        if (!unitId) return;
         questionCountByUnitId.set(unitId, (questionCountByUnitId.get(unitId) || 0) + 1);
       });
     });
@@ -683,9 +656,6 @@ exports.getUnitsWithProgress = async (req, res) => {
   }
 };
 
-// Flattened, newest-first archive of a student's revealed daily-challenge questions for one unit
-// (optionally further filtered to one topic) — the leaf view behind the Daily Challenge tab's
-// unit -> (topics ->) drill-down.
 exports.getUnitHistory = async (req, res) => {
   try {
     const userId = getRequestUserId(req);
@@ -705,7 +675,6 @@ exports.getUnitHistory = async (req, res) => {
       return res.status(404).json({ message: 'Unit not found' });
     }
 
-    // Fetched for its name only — a topic no longer belonging to this unit still filters results below.
     const topic = topicId ? await Topic.findById(topicId).select('name').lean() : null;
 
     const revealedChallenges = await getRevealedChallengesForUser(userId);
@@ -722,13 +691,14 @@ exports.getUnitHistory = async (req, res) => {
 
     const questions = [];
     revealedChallenges.forEach(({ challenge, attempt }) => {
+
       const responseByQuestionId = new Map(
-        (attempt.responses || []).map((r) => [String(r.questionId), r])
+        (attempt?.responses || []).map((r) => [String(r.questionId), r])
       );
 
       challenge.questionSnapshot.forEach((snapshotEntry) => {
         const info = questionInfoById.get(String(snapshotEntry.questionId));
-        if (!info || !info.unitId || String(info.unitId) !== String(unitId)) return; // unresolved or wrong unit
+        if (!info || !info.unitId || String(info.unitId) !== String(unitId)) return;
         if (topicId && String(info.topicId || snapshotEntry.topicId || '') !== String(topicId)) return;
 
         const revealedEntry = revealForAttempt(
@@ -756,9 +726,6 @@ exports.getUnitHistory = async (req, res) => {
   }
 };
 
-// Ranks students by total Daily Challenge points (sum of each challenge's best score), tie-broken
-// by challenges completed. Always includes the requesting student's own rank, even if they fall
-// outside the top LEADERBOARD_LIMIT.
 exports.getLeaderboard = async (req, res) => {
   try {
     const userId = getRequestUserId(req);
@@ -769,9 +736,6 @@ exports.getLeaderboard = async (req, res) => {
       return res.json({ leaderboard: [], me: null });
     }
 
-    // Points, not a raw score sum: an attempted challenge adds its best score, but a challenge a
-    // participant never attempted subtracts MISSED_DAY_PENALTY instead of contributing 0 — ignoring
-    // the Daily Challenge should cost you, not just fail to help you.
     const pointsByUserId = await computeLeaderboardPoints(participantIds);
     const ranked = participantIds
       .map((id) => {
@@ -795,7 +759,7 @@ exports.getLeaderboard = async (req, res) => {
 
     const toEntry = (row, rank) => {
       const user = userById.get(String(row._id));
-      const streak = streaksByUserId.get(String(row._id)) || { currentStreak: 0, longestStreak: 0 };
+      const streak = streaksByUserId.get(String(row._id)) || { currentStreak: 0, longestStreak: 0, overallStreak: 0 };
       return {
         rank,
         userId: row._id,
@@ -803,6 +767,7 @@ exports.getLeaderboard = async (req, res) => {
         totalScore: row.totalScore,
         challengesCompleted: row.challengesCompleted,
         currentStreak: streak.currentStreak,
+        overallStreak: streak.overallStreak,
         isMe: String(row._id) === String(userId),
       };
     };
