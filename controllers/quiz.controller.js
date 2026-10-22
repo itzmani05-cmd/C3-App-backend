@@ -1,4 +1,5 @@
 const Question = require('../models/Question');
+const PracticeQuestion = require('../models/PracticeQuestion');
 const Attempt = require('../models/Attempt');
 const Progress = require('../models/Progress');
 const mongoose = require('mongoose');
@@ -14,6 +15,7 @@ const {
   stripAnswers,
 } = require('../utils/questionFormat');
 const { getLearningPathForUser, getLessonKey } = require('../utils/learningPath');
+const { mixPracticeQuestions } = require('../utils/practiceQuestions');
 const { updateProgress, unlockNextLesson } = require('./progress.controller');
 
 const QUIZ_SIZE = 25;
@@ -135,10 +137,18 @@ exports.getPracticeQuestions = async (req, res) => {
       return res.status(400).json({ message: "A valid topicId or subtopicId is required" });
     }
 
-    const questions = await Question.aggregate([
-      { $match: { [idField]: new mongoose.Types.ObjectId(id), ...STUDENT_VISIBLE_QUESTION } },
-      { $sample: { size: PRACTICE_SIZE } }
+    const lessonId = new mongoose.Types.ObjectId(id);
+    // The admin site's practice questions belong to a topic, never a subtopic, so they join a topic lesson only.
+    const [lessonQuestions, adminPractice] = await Promise.all([
+      Question.aggregate([
+        { $match: { [idField]: lessonId, ...STUDENT_VISIBLE_QUESTION } },
+        { $sample: { size: PRACTICE_SIZE } }
+      ]),
+      idField === 'topicId'
+        ? PracticeQuestion.aggregate([{ $match: { topicId: lessonId } }, { $sample: { size: PRACTICE_SIZE } }])
+        : []
     ]);
+    const questions = mixPracticeQuestions([lessonQuestions, adminPractice], PRACTICE_SIZE);
 
     if (questions.length === 0) {
       return res.status(404).json({ message: "No practice questions available" });
