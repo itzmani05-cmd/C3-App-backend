@@ -4,6 +4,11 @@ const Unit = require('../models/Unit');
 const Topic = require('../models/Topic');
 const Subtopic = require('../models/Subtopic');
 const Progress = require('../models/Progress');
+const { toIdString, getLessonKey } = require('./lessonKey');
+const { getQuestionCounts, getPracticedCounts } = require('./practiceCounts');
+
+// A lesson with practice questions but no quiz is cleared once the student has practised this share of them.
+const PRACTICE_CLEAR_PERCENT = 80;
 
 function sortBySequence(left, right) {
   const leftSequence = Number.isFinite(Number(left?.order))
@@ -20,22 +25,6 @@ function sortBySequence(left, right) {
   return String(left?.name || '').localeCompare(String(right?.name || ''), undefined, {
     sensitivity: 'base',
   });
-}
-
-function toIdString(value) {
-  return value == null ? null : String(value);
-}
-
-function getLessonKey({ topicId, subtopicId }) {
-  if (subtopicId) {
-    return `subtopic:${toIdString(subtopicId)}`;
-  }
-
-  if (topicId) {
-    return `topic:${toIdString(topicId)}`;
-  }
-
-  return null;
 }
 
 function buildProgressMap(progressDocs = []) {
@@ -166,7 +155,22 @@ async function buildActiveContentTree({ examId } = {}) {
   };
 }
 
-function applyProgressToTree(contentTree, progressDocs = []) {
+// What a lesson's questions mean for unlocking, when the counts are known. A lesson with no quiz questions can never be
+// passed with a quiz, so it must not stop the student: with no practice questions either it is skipped (`isEmpty`), and
+// with practice questions it is cleared by practising most of them.
+function practiceRule(key, practice) {
+  if (!practice) return { isEmpty: false, practiceCleared: false };
+
+  const quizCount = practice.quiz[key] || 0;
+  const practiceCount = practice.admin[key] || 0;
+  if (quizCount > 0) return { isEmpty: false, practiceCleared: false };
+  if (practiceCount === 0) return { isEmpty: true, practiceCleared: false };
+
+  const practiced = Math.min(practice.practiced[key] || 0, practiceCount);
+  return { isEmpty: false, practiceCleared: (practiced / practiceCount) * 100 >= PRACTICE_CLEAR_PERCENT };
+}
+
+function applyProgressToTree(contentTree, progressDocs = [], practice = null) {
   const progressMap = buildProgressMap(progressDocs);
   const lessonStateMap = new Map();
   const lessons = [];
@@ -177,10 +181,11 @@ function applyProgressToTree(contentTree, progressDocs = []) {
 
     const isFirstInUnit = !previousLesson || previousLesson.unitId !== lesson.unitId;
 
-    const isCleared = Boolean(progressDoc?.isCleared);
+    const { isEmpty, practiceCleared } = practiceRule(lesson.key, practice);
+    const isCleared = Boolean(progressDoc?.isCleared) || practiceCleared;
     const isSequentiallyUnlocked =
       isFirstInUnit ||
-      Boolean(previousLesson?.isCleared && previousLesson?.isSequentiallyUnlocked);
+      Boolean((previousLesson?.isCleared || previousLesson?.isEmpty) && previousLesson?.isSequentiallyUnlocked);
 
     const isUnlocked = isSequentiallyUnlocked || isCleared;
 
@@ -188,6 +193,7 @@ function applyProgressToTree(contentTree, progressDocs = []) {
       ...lesson,
       isSequentiallyUnlocked,
       isUnlocked,
+      isEmpty,
       isCleared,
       isMastered: Boolean(progressDoc?.isMastered),
       bestScore: progressDoc?.bestScore || 0,
@@ -254,15 +260,28 @@ function applyProgressToTree(contentTree, progressDocs = []) {
   };
 }
 
+// Question counts and the student's practice progress. If they cannot be read the path is built without them, so the
+// old rules apply rather than the whole path failing.
+async function loadPracticeInfo(userId) {
+  try {
+    const [counts, practiced] = await Promise.all([getQuestionCounts(), getPracticedCounts(userId)]);
+    return { ...counts, practiced };
+  } catch (err) {
+    console.error('[learningPath] practice info unavailable:', err.message);
+    return null;
+  }
+}
+
 async function getLearningPathForUser(userId, { examId } = {}) {
   const contentTree = await fetchActiveContentTree({ examId });
+  const practice = await loadPracticeInfo(userId);
 
   if (!userId || !mongoose.Types.ObjectId.isValid(String(userId))) {
-    return applyProgressToTree(contentTree, []);
+    return applyProgressToTree(contentTree, [], practice);
   }
 
   const progressDocs = await Progress.find({ userId }).lean();
-  return applyProgressToTree(contentTree, progressDocs);
+  return applyProgressToTree(contentTree, progressDocs, practice);
 }
 
 async function getNextLesson({ currentTopicId, currentSubtopicId, userId } = {}) {
@@ -282,6 +301,7 @@ async function getNextLesson({ currentTopicId, currentSubtopicId, userId } = {})
 }
 
 module.exports = {
+  applyProgressToTree,
   getLessonKey,
   getLearningPathForUser,
   getNextLesson,

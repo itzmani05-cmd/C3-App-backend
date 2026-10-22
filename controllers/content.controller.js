@@ -6,6 +6,8 @@ const {
   getLearningPathForUser,
   getNextLesson: resolveNextLesson,
 } = require('../utils/learningPath');
+const { getQuestionCounts, getPracticedCounts } = require('../utils/practiceCounts');
+const { addPracticeInfo } = require('../utils/practiceSet');
 
 exports.getUnits=async(req,res)=>{
     try{
@@ -72,8 +74,17 @@ exports.getLearningPath = async (req, res) => {
     const userId = req.userId;
     const learningPath = await getLearningPathForUser(userId, { examId: req.query.examId });
 
+    // Question counts and practice progress are extras: the path still loads if they cannot be read.
+    let units = learningPath.units;
+    try {
+      const [counts, practiced] = await Promise.all([getQuestionCounts(), getPracticedCounts(userId)]);
+      units = addPracticeInfo(units, counts, practiced);
+    } catch (err) {
+      console.error('Practice info error:', err.message);
+    }
+
     res.json({
-      units: learningPath.units,
+      units,
       lessons: learningPath.lessons,
     });
   } catch (err) {

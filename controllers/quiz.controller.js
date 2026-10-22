@@ -16,6 +16,14 @@ const {
 } = require('../utils/questionFormat');
 const { getLearningPathForUser, getLessonKey } = require('../utils/learningPath');
 const { mixPracticeQuestions } = require('../utils/practiceQuestions');
+const PracticeProgress = require('../models/PracticeProgress');
+const {
+  clampPosition,
+  pageRange,
+  getLessonEntries,
+  loadEntries,
+  loadLessonProgress,
+} = require('../utils/practiceSet');
 const { updateProgress, unlockNextLesson } = require('./progress.controller');
 
 const QUIZ_SIZE = 25;
@@ -158,6 +166,86 @@ exports.getPracticeQuestions = async (req, res) => {
   } catch (err) {
     console.error("GET PRACTICE ERROR:", err);
     res.status(500).json({ message: "Error fetching practice questions" });
+  }
+};
+
+// The practice questions of a lesson in a fixed order, one page at a time, with the student's saved place. Without an
+// `offset` the page starts where the student left off.
+exports.getPracticeLesson = async (req, res) => {
+  const { topicId, subtopicId, offset, limit } = req.query;
+  const userId = req.userId;
+
+  try {
+    const idField = subtopicId ? 'subtopicId' : 'topicId';
+    const id = subtopicId || topicId;
+
+    if (!id || !mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "A valid topicId or subtopicId is required" });
+    }
+
+    const entries = await getLessonEntries(idField, id);
+    if (entries.length === 0) {
+      return res.status(404).json({ message: "No practice questions available" });
+    }
+
+    const lessonKey = getLessonKey({ [idField]: id });
+    const progress = await loadLessonProgress(userId, lessonKey);
+    const { start, end } = pageRange(offset === undefined ? progress?.position : offset, limit, entries.length);
+    const questions = await loadEntries(entries.slice(start, end));
+
+    const current = new Set(entries.map((entry) => String(entry._id)));
+    res.json({
+      total: entries.length,
+      offset: start,
+      questions,
+      position: clampPosition(progress?.position, entries.length),
+      practicedIds: (progress?.practicedIds || []).map(String).filter((practicedId) => current.has(practicedId)),
+    });
+  } catch (err) {
+    console.error("GET PRACTICE LESSON ERROR:", err);
+    res.status(500).json({ message: "Error fetching practice questions" });
+  }
+};
+
+const MAX_PROGRESS_IDS = 200;
+
+// Saves where the student is and which questions they have worked through. Only questions of the lesson count.
+exports.savePracticeProgress = async (req, res) => {
+  const { topicId, subtopicId, questionIds, position } = req.body || {};
+  const userId = req.userId;
+
+  try {
+    const idField = subtopicId ? 'subtopicId' : 'topicId';
+    const id = subtopicId || topicId;
+
+    if (!id || !mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "A valid topicId or subtopicId is required" });
+    }
+
+    const entries = await getLessonEntries(idField, id);
+    const inLesson = new Set(entries.map((entry) => String(entry._id)));
+    const practiced = (Array.isArray(questionIds) ? questionIds : [])
+      .slice(0, MAX_PROGRESS_IDS)
+      .map(String)
+      .filter((questionId) => inLesson.has(questionId));
+
+    const update = {
+      $set: {
+        topicId: topicId || null,
+        subtopicId: subtopicId || null,
+        position: clampPosition(position, entries.length),
+        lastPracticedAt: new Date(),
+      },
+    };
+    if (practiced.length > 0) update.$addToSet = { practicedIds: { $each: practiced } };
+
+    await PracticeProgress.findOneAndUpdate({ userId, lessonKey: getLessonKey({ [idField]: id }) }, update, { upsert: true });
+    cache.del(`dashboard_${userId}`);
+
+    res.json({ saved: practiced.length });
+  } catch (err) {
+    console.error("SAVE PRACTICE PROGRESS ERROR:", err);
+    res.status(500).json({ message: "Error saving practice progress" });
   }
 };
 
