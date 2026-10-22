@@ -1,3 +1,4 @@
+const cache = require('memory-cache');
 const mongoose = require('mongoose');
 const Unit = require('../models/Unit');
 const Topic = require('../models/Topic');
@@ -61,7 +62,22 @@ function groupById(items, keyName) {
   }, new Map());
 }
 
+// Units, topics and lessons change rarely and are identical for every student, yet every learning-path, quiz-start and
+// next-lesson request used to reload all of them. The built tree is kept briefly; applyProgressToTree copies what it
+// needs and never mutates it, so one cached tree can serve concurrent requests. Edits show up within CONTENT_TTL_MS.
+const CONTENT_TTL_MS = 60 * 1000;
+
 async function fetchActiveContentTree({ examId } = {}) {
+  const cacheKey = `content_tree_${examId && mongoose.Types.ObjectId.isValid(String(examId)) ? String(examId) : 'all'}`;
+  const cached = cache.get(cacheKey);
+  if (cached) return cached;
+
+  const tree = await buildActiveContentTree({ examId });
+  cache.put(cacheKey, tree, CONTENT_TTL_MS);
+  return tree;
+}
+
+async function buildActiveContentTree({ examId } = {}) {
   const unitFilter = { isActive: { $ne: false } };
   if (examId && mongoose.Types.ObjectId.isValid(String(examId))) {
     unitFilter.examId = examId;

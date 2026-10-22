@@ -253,7 +253,34 @@ function normalizeQuestion(question) {
   return normalized;
 }
 
+// A copy of a normalized question that is safe to send before the student has answered: no correct answer, no
+// explanation and no per-option correctness flags. Submitting a quiz returns the full question for review.
+function stripAnswers(question) {
+  const {
+    correctAnswer,
+    correct_answer,
+    correctOptionIndexes,
+    numericalAnswer,
+    explanation,
+    explanationImage,
+    ...safe
+  } = question;
+
+  if (Array.isArray(safe.options)) {
+    safe.options = safe.options.map((option) => {
+      if (option && typeof option === 'object' && !Array.isArray(option)) {
+        const { isCorrect, ...rest } = option;
+        return rest;
+      }
+      return option;
+    });
+  }
+
+  return safe;
+}
+
 module.exports = {
+  stripAnswers,
   getAnswerType,
   getCorrectOptionIndex,
   getCorrectOptionIndexes,

@@ -31,4 +31,8 @@ questionSchema.index({
     subtopicId: 1
 });
 
+// Quizzes and practice look questions up by topic or subtopic alone.
+questionSchema.index({ topicId: 1 });
+questionSchema.index({ subtopicId: 1 });
+
 module.exports = mongoose.model('Question', questionSchema);

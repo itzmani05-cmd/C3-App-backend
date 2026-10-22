@@ -11,4 +11,7 @@ const progressSchema = new mongoose.Schema({
   lastAttempted: Date
 });
 
+// Every learning-path request loads a student's progress, and each submit updates one lesson's document.
+progressSchema.index({ userId: 1, subtopicId: 1, topicId: 1 });
+
 module.exports = mongoose.model('progresses', progressSchema);

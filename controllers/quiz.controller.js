@@ -11,11 +11,16 @@ const {
   getNumericalAnswer,
   isNumericalAnswerCorrect,
   normalizeQuestion,
+  stripAnswers,
 } = require('../utils/questionFormat');
 const { getLearningPathForUser, getLessonKey } = require('../utils/learningPath');
 const { updateProgress, unlockNextLesson } = require('./progress.controller');
 
 const QUIZ_SIZE = 25;
+const PRACTICE_SIZE = 100;
+
+// Quiz questions are served without their answers; practice mode and the post-submit review include them.
+const quizQuestion = (question) => stripAnswers(normalizeQuestion(question));
 
 const STUDENT_VISIBLE_QUESTION = { status: { $nin: ['pending', 'rejected'] } };
 
@@ -26,9 +31,19 @@ function sampleQuizQuestions(match) {
     ]);
 }
 
-exports.getQuiz = async (req, res) => {
-  const { topicId } = req.params;
+// Questions of a saved session, in the order they were first served.
+async function questionsForSession(session) {
+  const questions = await Question.find({ _id: { $in: session.questionOrder } }).lean();
+  const byId = new Map(questions.map(q => [q._id.toString(), q]));
+  return session.questionOrder.map(id => byId.get(id.toString())).filter(Boolean);
+}
+
+// Serves a quiz for a topic or subtopic: resumes the caller's open session when there is one, otherwise starts a
+// new session from a random sample. `idField` is 'topicId' or 'subtopicId'.
+async function serveQuiz(req, res, idField) {
+  const id = req.params[idField];
   const { sessionId } = req.query;
+  const label = idField === 'topicId' ? 'topic' : 'subtopic';
 
   try {
     const userId = req.userId || req.headers.userid;
@@ -50,231 +65,128 @@ exports.getQuiz = async (req, res) => {
 
       if (!Array.isArray(session.questionOrder)) {
         await Attempt.deleteOne({ _id: session._id });
-        return res.status(400).json({
-          message: "Corrupted session. Please restart quiz."
-        });
+        return res.status(400).json({ message: "Corrupted session. Please restart quiz." });
       }
 
-      const questions = await Question.find({
-        _id: { $in: session.questionOrder }
-      }).lean();
-
-      const questionMap = {};
-      questions.forEach(q => {
-        questionMap[q._id.toString()] = q;
-      });
-
-      const orderedQuestions = session.questionOrder
-        .map(id => questionMap[id.toString()])
-        .filter(Boolean);
-
-      return res.json({
-        sessionId,
-        questions: orderedQuestions.map(q => normalizeQuestion(q))
-      });
+      const ordered = await questionsForSession(session);
+      return res.json({ sessionId, questions: ordered.map(quizQuestion) });
     }
 
-    const existingSession = await Attempt.findOne({
-      userId,
-      quizId: topicId,
-      isSubmitted: false
-    }).lean();
+    const existingSession = await Attempt.findOne({ userId, quizId: id, isSubmitted: false }).lean();
 
     if (existingSession) {
       if (!Array.isArray(existingSession.questionOrder) || existingSession.questionOrder.length === 0) {
         await Attempt.deleteOne({ _id: existingSession._id });
       } else {
-        const questions = await Question.find({
-          _id: { $in: existingSession.questionOrder }
-        }).lean();
-
-        const questionMap = {};
-        questions.forEach(q => {
-          questionMap[q._id.toString()] = q;
-        });
-
-        const orderedQuestions = existingSession.questionOrder
-          .map(id => questionMap[id.toString()])
-          .filter(Boolean);
-
+        const ordered = await questionsForSession(existingSession);
         await Attempt.findByIdAndUpdate(existingSession._id, { startedAt: new Date() });
 
         return res.json({
           sessionId: existingSession._id,
-          questions: orderedQuestions.map(q => normalizeQuestion(q))
+          questions: ordered.map(quizQuestion)
         });
       }
     }
 
     const learningPath = await getLearningPathForUser(userId);
-    const lessonKey = getLessonKey({ topicId });
+    const lessonKey = getLessonKey({ [idField]: id });
     const currentLesson = learningPath?.lessons?.find(l => l.key === lessonKey);
 
     if (currentLesson && !currentLesson.isUnlocked) {
       return res.status(403).json({ message: "Lesson is locked" });
     }
 
-    const questions = await sampleQuizQuestions({ topicId: new mongoose.Types.ObjectId(topicId) });
+    const questions = await sampleQuizQuestions({ [idField]: new mongoose.Types.ObjectId(id) });
 
     if (!questions || questions.length === 0) {
-      return res.status(404).json({
-        message: "No questions available for this topic"
-      });
+      return res.status(404).json({ message: `No questions available for this ${label}` });
     }
 
-    const shuffled = questions;
-
-    console.log("[GET QUIZ] Creating session object...");
-    const session = new Attempt({
+    const session = await new Attempt({
       userId,
-      quizId: topicId,
-      questionOrder: shuffled.map(q => q._id),
+      quizId: id,
+      questionOrder: questions.map(q => q._id),
       isSubmitted: false,
       startedAt: new Date()
-    });
-
-    console.log("[GET QUIZ] Session object before save:", {
-        id: session._id,
-        orderLength: session.questionOrder?.length,
-        orderData: session.questionOrder
-    });
-
-    await session.save();
-
-    console.log("[GET QUIZ] Session saved. Final order in memory:", session.questionOrder?.length);
+    }).save();
 
     res.json({
       sessionId: session._id.toString(),
-      questions: shuffled.map(q => normalizeQuestion(q))
+      questions: questions.map(quizQuestion)
     });
-
   } catch (err) {
-    console.error("GET QUIZ ERROR:", err);
-    res.status(500).json({
-      message: err.message || "Error fetching questions"
-    });
+    console.error(`GET QUIZ (${label}) ERROR:`, err);
+    res.status(500).json({ message: "Error fetching questions" });
+  }
+}
+
+exports.getQuiz = (req, res) => serveQuiz(req, res, 'topicId');
+
+exports.getQuizBySubtopic = (req, res) => serveQuiz(req, res, 'subtopicId');
+
+exports.getPracticeQuestions = async (req, res) => {
+  const { topicId, subtopicId } = req.query;
+
+  try {
+    const idField = subtopicId ? 'subtopicId' : 'topicId';
+    const id = subtopicId || topicId;
+
+    if (!id || !mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "A valid topicId or subtopicId is required" });
+    }
+
+    const questions = await Question.aggregate([
+      { $match: { [idField]: new mongoose.Types.ObjectId(id), ...STUDENT_VISIBLE_QUESTION } },
+      { $sample: { size: PRACTICE_SIZE } }
+    ]);
+
+    if (questions.length === 0) {
+      return res.status(404).json({ message: "No practice questions available" });
+    }
+
+    res.json({ questions: questions.map(q => normalizeQuestion(q)) });
+  } catch (err) {
+    console.error("GET PRACTICE ERROR:", err);
+    res.status(500).json({ message: "Error fetching practice questions" });
   }
 };
 
-exports.getQuizBySubtopic = async (req, res) => {
-    const { subtopicId } = req.params;
-    const { sessionId } = req.query;
+const MAX_TRIES_BEFORE_REVEAL = 3;
 
-    try {
-        const userId = req.userId || req.headers.userid;
+// Counts a tap on a single-choice option. On the third try the correct option is revealed, as the quiz has always
+// worked, but the count and the answer now live on the server so the answer never reaches the phone early.
+exports.recordTry = async (req, res) => {
+  const { sessionId, questionId } = req.body;
+  const userId = req.userId || req.headers.userid;
 
-        if (sessionId) {
-            const session = await Attempt.findById(sessionId).lean();
-
-            if (!session) {
-                return res.status(404).json({ message: "Session not found" });
-            }
-
-            if (session.userId.toString() !== userId.toString()) {
-                return res.status(403).json({ message: "Unauthorized session" });
-            }
-
-            if (!Array.isArray(session.questionOrder)) {
-                await Attempt.deleteOne({ _id: session._id });
-                return res.status(400).json({
-                    message: "Corrupted session. Please restart quiz."
-                });
-            }
-
-            const questions = await Question.find({
-                _id: { $in: session.questionOrder }
-            }).lean();
-
-            const questionMap = {};
-            questions.forEach(q => {
-                questionMap[q._id.toString()] = q;
-            });
-
-            const orderedQuestions = session.questionOrder.map(id =>
-                questionMap[id.toString()]
-            ).filter(Boolean);
-
-            return res.json({
-                sessionId,
-                questions: orderedQuestions.map(q => normalizeQuestion(q))
-            });
-        }
-
-        const existingSession = await Attempt.findOne({
-            userId,
-            quizId: subtopicId,
-            isSubmitted: false
-        }).lean();
-
-        if (existingSession) {
-            if (!Array.isArray(existingSession.questionOrder) || existingSession.questionOrder.length === 0) {
-                await Attempt.deleteOne({ _id: existingSession._id });
-            } else {
-                const questions = await Question.find({
-                    _id: { $in: existingSession.questionOrder }
-                }).lean();
-
-                const questionMap = {};
-                questions.forEach(q => {
-                    questionMap[q._id.toString()] = q;
-                });
-
-                const orderedQuestions = existingSession.questionOrder.map(id =>
-                    questionMap[id.toString()]
-                ).filter(Boolean);
-
-                await Attempt.findByIdAndUpdate(existingSession._id, { startedAt: new Date() });
-
-                return res.json({
-                    sessionId: existingSession._id,
-                    questions: orderedQuestions.map(q => normalizeQuestion(q))
-                });
-            }
-        }
-
-        const learningPath = await getLearningPathForUser(userId);
-        const lessonKey = getLessonKey({ subtopicId });
-        const currentLesson = learningPath.lessons.find(l => l.key === lessonKey);
-
-        if (currentLesson && !currentLesson.isUnlocked) {
-            return res.status(403).json({ message: "Lesson is locked" });
-        }
-
-        const questions = await sampleQuizQuestions({ subtopicId: new mongoose.Types.ObjectId(subtopicId) });
-
-        if (questions.length === 0) {
-            return res.status(404).json({ message: "No questions available for this subtopic" });
-        }
-
-        const shuffled = questions;
-
-        console.log("[GET QUIZ SUBTOPIC] Creating session object...");
-        const session = new Attempt({
-            userId,
-            quizId: subtopicId,
-            questionOrder: shuffled.map(q => q._id),
-            isSubmitted: false,
-            startedAt: new Date()
-        });
-
-        console.log("[GET QUIZ SUBTOPIC] Session object before save:", {
-            id: session._id,
-            orderLength: session.questionOrder?.length
-        });
-
-        await session.save();
-
-        console.log("[GET QUIZ SUBTOPIC] Session saved successfully");
-
-        res.json({
-            sessionId: session._id.toString(),
-            questions: shuffled.map(q => normalizeQuestion(q))
-        });
-
-    } catch (err) {
-        console.log(err);
-        res.status(500).json({ message: "Error fetching questions" });
+  try {
+    if (!mongoose.Types.ObjectId.isValid(sessionId) || !mongoose.Types.ObjectId.isValid(questionId)) {
+      return res.status(400).json({ message: "sessionId and questionId are required" });
     }
+
+    const session = await Attempt.findOneAndUpdate(
+      { _id: sessionId, userId, isSubmitted: false, questionOrder: new mongoose.Types.ObjectId(questionId) },
+      { $inc: { [`tries.${questionId}`]: 1 } },
+      { new: true, strict: false }
+    ).lean();
+
+    if (!session) {
+      return res.status(404).json({ message: "Open quiz session not found" });
+    }
+
+    const attempts = session.tries?.[questionId] || 1;
+    if (attempts < MAX_TRIES_BEFORE_REVEAL) {
+      return res.json({ attempts });
+    }
+
+    const question = await Question.findById(questionId).lean();
+    const revealedOptionIndex = question && getAnswerType(question) === 'single' ? getCorrectOptionIndex(question) : -1;
+
+    res.json({ attempts, revealedOptionIndex: revealedOptionIndex >= 0 ? revealedOptionIndex : undefined });
+  } catch (err) {
+    console.error("RECORD TRY ERROR:", err);
+    res.status(500).json({ message: "Error recording attempt" });
+  }
 };
 
 exports.submitQuiz = async (req, res) => {
@@ -290,7 +202,6 @@ exports.submitQuiz = async (req, res) => {
   if (topicId === "undefined" || topicId === "null" || !topicId) topicId = null;
 
   const userId = req.userId || req.headers.userid;
-  console.log("[SUBMIT] Sanitized IDs:", { sessionId, subtopicId, topicId, userId });
 
   try {
     if (!sessionId) {
@@ -304,7 +215,6 @@ exports.submitQuiz = async (req, res) => {
       return res.status(404).json({ message: "Session not found" });
     }
 
-    console.log("[SUBMIT] Found session:", { sessionId: session._id, sessionUserId: session.userId, sessionIsSubmitted: session.isSubmitted });
 
     if (session.userId.toString() !== userId.toString()) {
       console.error("[SUBMIT] Unauthorized session. Session User:", session.userId, "Request User:", userId);
@@ -315,20 +225,13 @@ exports.submitQuiz = async (req, res) => {
       return res.status(400).json({ message: "Quiz already submitted" });
     }
 
-    const QUIZ_DURATION = 3600 * 24;
-    const elapsed =
-      (Date.now() - new Date(session.startedAt).getTime()) / 1000;
-
-    if (!isTimedOut && elapsed > QUIZ_DURATION) {
-      console.log("[SUBMIT] Quiz submitted after 24 hours. Session:", session._id);
+    // Progress is credited to the lesson the session was started for, never to one the client names.
+    const lessonId = subtopicId || topicId;
+    if (lessonId && String(lessonId) !== String(session.quizId)) {
+      return res.status(400).json({ message: "Session does not belong to this lesson" });
     }
+
     const order = session.questionOrder;
-    console.log("[SUBMIT] Session retrieved from DB:", {
-        id: session._id,
-        hasOrder: !!order,
-        isArray: Array.isArray(order),
-        length: order?.length
-    });
 
     if (!Array.isArray(order) || order.length === 0) {
       console.error("[SUBMIT] CRITICAL: questionOrder is empty or missing in DB for session", session._id);
@@ -345,7 +248,6 @@ exports.submitQuiz = async (req, res) => {
     const questions = await Question.find({
       _id: { $in: validQuestionIds }
     }).lean();
-    console.log("[SUBMIT] Fetched questions from DB count:", questions.length);
 
     const questionMap = {};
     questions.forEach(q => {
@@ -366,8 +268,8 @@ exports.submitQuiz = async (req, res) => {
 
     let correct = 0;
     const evaluatedAnswers = [];
+    const reviewQuestions = [];
 
-    console.log("[SUBMIT] Starting answer evaluation for questions:", order.length);
 
     for (const qId of order) {
       let rawQuestion = questionMap[qId.toString()];
@@ -383,6 +285,7 @@ exports.submitQuiz = async (req, res) => {
 
       const ans = answerMap[qId.toString()];
       const q = normalizeQuestion(rawQuestion);
+      reviewQuestions.push(q);
       const answerType = getAnswerType(rawQuestion);
 
       let isCorrect = false;
@@ -465,10 +368,19 @@ exports.submitQuiz = async (req, res) => {
       quizId: session.quizId,
       isSubmitted: true
     });
-    console.log("[SUBMIT] Previous submitted attempts for quiz", session.quizId, ":", attemptCount, "(current attempt not yet saved)");
 
     const MAX_QUIZ_ATTEMPTS = 3;
     const attemptsExhausted = attemptCount + 1 >= MAX_QUIZ_ATTEMPTS;
+
+    // The student's best score on this lesson before this attempt, so the result screen can say "new best" or show
+    // the change. Read before updateProgress / the $max update below overwrite it.
+    let previousBest = null;
+    if (subtopicId || topicId) {
+      const previous = await Progress.findOne(
+        subtopicId ? { userId, subtopicId } : { userId, topicId, subtopicId: null }
+      ).select('bestScore').lean();
+      previousBest = typeof previous?.bestScore === 'number' ? previous.bestScore : null;
+    }
 
     if (subtopicId || topicId) {
       const progressPassed = await updateProgress({
@@ -477,7 +389,6 @@ exports.submitQuiz = async (req, res) => {
         subtopicId: subtopicId || null,
         percentage
       });
-      console.log("[SUBMIT] updateProgress result:", progressPassed);
 
       if (progressPassed) {
         await unlockNextLesson(userId, {
@@ -487,7 +398,6 @@ exports.submitQuiz = async (req, res) => {
       }
 
       if (attemptCount >= 2) {
-        console.log("[SUBMIT] 3rd+ attempt reached (2 previous + current). Auto-unlocking next lesson.");
 
         await Progress.findOneAndUpdate(
           subtopicId
@@ -537,7 +447,6 @@ exports.submitQuiz = async (req, res) => {
     session.responses = evaluatedAnswers;
     session.submittedAt = new Date();
 
-    console.log("[SUBMIT] Saving session data...");
     if (typeof session.save !== 'function') {
         console.error("[SUBMIT] CRITICAL: session.save is not a function. session type:", typeof session);
         return res.status(500).json({ message: "Internal server error: session document corrupted" });
@@ -545,7 +454,6 @@ exports.submitQuiz = async (req, res) => {
 
     try {
         await session.save();
-        console.log("[SUBMIT] Session saved successfully");
     } catch (saveErr) {
         console.error("[SUBMIT] Error saving session:", saveErr);
         return res.status(500).json({ message: "Error saving quiz results: " + saveErr.message });
@@ -560,7 +468,10 @@ exports.submitQuiz = async (req, res) => {
       attemptNumber: attemptCount + 1,
       maxAttempts: MAX_QUIZ_ATTEMPTS,
       attemptsExhausted,
+      previousBest,
       reviewUnlocked: session.isExplanationUnlocked,
+      // Answers and explanations are only sent once the student is allowed to see them.
+      review: session.isExplanationUnlocked ? reviewQuestions : undefined,
       message: passed ? "Unlocked" : "Retry"
     });
 

@@ -10,12 +10,9 @@ const RECEIPT_DELAY_MS = 15 * 60 * 1000;
 const RECEIPT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const OUTBOX_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const SWEEP_BATCH = 500;
-const BULK_CHUNK = 500;
 
 const DEAD_TOKEN_ERRORS = new Set(['DeviceNotRegistered', 'InvalidToken']);
 const RETRYABLE_ERRORS = new Set(['TransportError', 'MessageRateExceeded']);
-
-const STUDENT_ROLES = ['student', 'Student'];
 
 function toIdString(v) {
   return v == null ? '' : String(v);
@@ -159,56 +156,6 @@ async function sendNotification(p) {
   return { created: stored, notificationId: toIdString(doc._id) };
 }
 
-async function sendNotificationToMany({ userIds, ...rest }) {
-  const ids = [...new Set((userIds || []).map(toIdString))].filter((id) => mongoose.Types.ObjectId.isValid(id));
-  const invalid = validateInput({ ...rest, userId: ids[0] });
-  if (!ids.length || invalid) {
-    if (invalid && ids.length) console.error('[notification.service] rejected broadcast:', invalid);
-    return { created: 0, duplicates: 0 };
-  }
-
-  let created = 0;
-  let duplicates = 0;
-
-  for (let i = 0; i < ids.length; i += BULK_CHUNK) {
-    const now = new Date();
-    const docs = ids.slice(i, i + BULK_CHUNK).map((userId) => buildDoc({ ...rest, userId }, now));
-
-    try {
-      await Notification.insertMany(docs, { ordered: false });
-    } catch (err) {
-      const nonDup = (err.writeErrors || []).some((e) => (e.code ?? e.err?.code) !== 11000);
-      if (nonDup || !err.writeErrors) console.error('[notification.service] broadcast insert error:', err.message);
-    }
-
-    const insertedIds = new Set(
-      (await Notification.find({ _id: { $in: docs.map((d) => d._id) } }).select('_id').lean()).map((d) => toIdString(d._id))
-    );
-    const inserted = docs.filter((d) => insertedIds.has(toIdString(d._id)));
-    created += inserted.length;
-    duplicates += docs.length - inserted.length;
-
-    try {
-      await deliverPushes(inserted);
-    } catch (err) {
-      console.error('[notification.service] broadcast push step failed:', err.message);
-    }
-  }
-
-  return { created, duplicates };
-}
-
-async function findStudentIds({ examId } = {}) {
-  const filter = {
-    role: { $in: STUDENT_ROLES },
-    isActive: { $ne: false },
-    status: { $nin: ['inactive', 'blocked'] },
-  };
-  if (examId) filter.examIds = examId;
-  const users = await User.find(filter).select('_id').lean();
-  return users.map((u) => u._id);
-}
-
 async function runPushOutboxSweep() {
   const now = new Date();
   const candidates = await Notification.find({
@@ -285,8 +232,6 @@ async function runPushReceiptSweep() {
 
 module.exports = {
   sendNotification,
-  sendNotificationToMany,
-  findStudentIds,
   runPushOutboxSweep,
   runPushReceiptSweep,
 };

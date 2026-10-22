@@ -30,4 +30,7 @@ const attemptSchema = new mongoose.Schema({
   submittedAt: Date
 }, { strict: false });
 
+// Finding a student's open session for a quiz, and counting their submitted attempts.
+attemptSchema.index({ userId: 1, quizId: 1, isSubmitted: 1 });
+
 module.exports = mongoose.model('Attempt', attemptSchema);

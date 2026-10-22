@@ -18,6 +18,7 @@ const userRoutes=require('./routes/user.routes');
 const progressRoutes=require('./routes/progress.routes');
 const dailyChallengeRoutes=require('./routes/dailyChallenge.routes');
 const notificationRoutes=require('./routes/notification.routes');
+const feedbackRoutes=require('./routes/feedback.routes');
 const { runDailyChallengeReminderSweep } = require('./jobs/dailyChallengeReminderJob');
 const { runPushOutboxSweep, runPushReceiptSweep } = require('./services/notification.service');
 
@@ -50,6 +51,7 @@ app.use('/api/progress',progressRoutes);
 app.use('/api/user',userRoutes);
 app.use('/api/daily-challenge',dailyChallengeRoutes);
 app.use('/api/notifications',notificationRoutes);
+app.use('/api/feedback',feedbackRoutes);
 
 const REMINDER_SWEEP_INTERVAL_MS = 15 * 60 * 1000;
 let reminderSweepRunning = false;
