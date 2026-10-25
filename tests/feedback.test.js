@@ -43,6 +43,24 @@ test('the rating is optional but must be a whole number from 1 to 5', () => {
   }
 });
 
+test('a question reference is cleaned up, and a bad one is dropped without rejecting the message', () => {
+  const body = { message: 'Question 3: the answer looks wrong.' };
+
+  const value = ok({ ...body, question: { id: 'abc123', number: '3', source: 'practice', context: 'Kinematics' } });
+  assert.equal(value.questionId, 'abc123');
+  assert.equal(value.questionNumber, 3);
+  assert.equal(value.questionSource, 'practice');
+  assert.equal(value.questionContext, 'Kinematics');
+
+  const bad = ok({ ...body, question: { id: { $ne: '' }, number: -2, source: 'elsewhere', context: 'x'.repeat(500) } });
+  assert.equal(bad.questionId, '');
+  assert.equal(bad.questionNumber, null);
+  assert.equal(bad.questionSource, '');
+  assert.equal(bad.questionContext.length, 120);
+
+  assert.deepEqual(Object.keys(ok({ ...body, question: 'nope' })).sort(), ['appVersion', 'category', 'message', 'platform', 'rating']);
+});
+
 test('device details are kept short and ignored when they are not text', () => {
   const value = ok({ message: 'A long enough message.', platform: 'android'.repeat(10), appVersion: { x: 1 } });
   assert.equal(value.platform.length, 20);

@@ -51,3 +51,16 @@ C3App-Server/
 │── .env                # Environment variables
 │── app.js / server.js  # Entry point
 │── package.json
+
+---
+
+## 🌐 Browser access (CORS)
+
+The mobile app is not affected by CORS. Websites are blocked unless they are listed in `CORS_ORIGINS`, a comma-separated
+list set in `.env` (or the host's environment settings):
+
+```
+CORS_ORIGINS=https://your-site.example,https://www.your-site.example
+```
+
+Pages served from `localhost` / `127.0.0.1` are always allowed so local development keeps working.

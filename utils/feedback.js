@@ -1,4 +1,5 @@
 const CATEGORIES = ['general', 'bug', 'content', 'suggestion'];
+const QUESTION_SOURCES = ['practice', 'quiz', 'daily', 'review'];
 const MIN_MESSAGE_LENGTH = 10;
 const MAX_MESSAGE_LENGTH = 1000;
 
@@ -35,8 +36,22 @@ function validateFeedback(body = {}) {
       rating,
       platform: shortText(body.platform, 20),
       appVersion: shortText(body.appVersion, 20),
+      ...cleanQuestion(body.question),
     },
   };
 }
 
-module.exports = { CATEGORIES, MIN_MESSAGE_LENGTH, MAX_MESSAGE_LENGTH, validateFeedback };
+// Feedback sent from a question screen says which question it is about. Anything that is not a well-formed reference is
+// dropped rather than rejected, so a bad value never stops the message itself from being sent.
+function cleanQuestion(question) {
+  if (!question || typeof question !== 'object' || Array.isArray(question)) return {};
+  const number = Number(question.number);
+  return {
+    questionId: shortText(question.id, 64),
+    questionNumber: Number.isInteger(number) && number > 0 ? number : null,
+    questionSource: QUESTION_SOURCES.includes(question.source) ? question.source : '',
+    questionContext: shortText(question.context, 120),
+  };
+}
+
+module.exports = { CATEGORIES, QUESTION_SOURCES, MAX_MESSAGE_LENGTH, validateFeedback };

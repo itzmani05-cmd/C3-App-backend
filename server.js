@@ -10,6 +10,7 @@ const cors=require('cors');
 const compression=require('compression');
 const rateLimit = require('express-rate-limit');
 const connectDB=require('./config/db');
+const { buildCorsOptions } = require('./utils/cors');
 
 const authRoutes=require('./routes/auth.routes');
 const quizRoutes=require('./routes/quiz.routes');
@@ -19,6 +20,7 @@ const progressRoutes=require('./routes/progress.routes');
 const dailyChallengeRoutes=require('./routes/dailyChallenge.routes');
 const notificationRoutes=require('./routes/notification.routes');
 const feedbackRoutes=require('./routes/feedback.routes');
+const bookmarkRoutes=require('./routes/bookmark.routes');
 const { runDailyChallengeReminderSweep } = require('./jobs/dailyChallengeReminderJob');
 const { runPushOutboxSweep, runPushReceiptSweep } = require('./services/notification.service');
 
@@ -28,7 +30,7 @@ connectDB();
 app.set('trust proxy', 1);
 
 app.use(compression());
-app.use(cors());
+app.use(cors(buildCorsOptions()));
 app.use(express.json());
 
 const limiter = rateLimit({
@@ -52,6 +54,7 @@ app.use('/api/user',userRoutes);
 app.use('/api/daily-challenge',dailyChallengeRoutes);
 app.use('/api/notifications',notificationRoutes);
 app.use('/api/feedback',feedbackRoutes);
+app.use('/api/bookmarks',bookmarkRoutes);
 
 const REMINDER_SWEEP_INTERVAL_MS = 15 * 60 * 1000;
 let reminderSweepRunning = false;

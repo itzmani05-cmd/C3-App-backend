@@ -23,4 +23,4 @@ function isKnownNotificationType(type) {
   return Object.prototype.hasOwnProperty.call(NOTIFICATION_TYPES, type);
 }
 
-module.exports = { NOTIFICATION_TYPES, NOTIFICATION_TYPE_KEYS, isKnownNotificationType };
+module.exports = { NOTIFICATION_TYPE_KEYS, isKnownNotificationType };

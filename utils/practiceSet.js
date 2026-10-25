@@ -3,7 +3,6 @@ const Question = require('../models/Question');
 const PracticeQuestion = require('../models/PracticeQuestion');
 const PracticeProgress = require('../models/PracticeProgress');
 const { normalizeQuestion } = require('./questionFormat');
-const { getLessonKey } = require('./lessonKey');
 
 const PAGE_SIZE = 25;
 const MAX_PAGE_SIZE = 50;
@@ -87,7 +86,6 @@ function addPracticeInfo(units, counts, practiced) {
 }
 
 module.exports = {
-  PAGE_SIZE,
   clampPosition,
   pageRange,
   countPracticed,
